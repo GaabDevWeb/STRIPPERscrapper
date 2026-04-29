@@ -1,0 +1,13 @@
+# Dependências (reinstalar com npm install no clone)
+node_modules/
+
+# Credenciais e sessão do browser — nunca enviar ao remoto
+.env
+session.json
+
+# Saída do scraper
+downloads/
+temp_downloads/
+package-lock.json
+VALIDACAO_SELETORES.md
+agent.md

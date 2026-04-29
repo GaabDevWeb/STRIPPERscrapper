@@ -1,0 +1,15 @@
+{
+  "name": "stripper-scrapper",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node stripper.js",
+    "stripper": "node stripper.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "package.json": "^2.0.1",
+    "puppeteer": "^24.1.0"
+  }
+}
