@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Component%202.png" alt="STRIPPER.scrapper — banner do projeto" width="820" />
+  <img src="/assets/stripperBanner.webp" alt="STRIPPER.scrapper — banner do projeto" width="820" />
 </p>
 
 # StripperScrapper
