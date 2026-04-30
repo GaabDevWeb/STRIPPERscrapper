@@ -3,6 +3,21 @@ import dotenv from 'dotenv';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import {
+  ensureDir,
+  fileExists,
+  detectSystemChrome,
+  printChromeHelp,
+  ensureAuthenticated,
+  safeDirName,
+  gotoUrl,
+} from './lib/infnetShared.mjs';
+import {
+  stableTranscriptItemId,
+  resolveManifestRootAndPath,
+  isItemCompleted,
+  markArtifactCompletedIfPresent,
+} from './lib/downloadManifest.mjs';
 
 dotenv.config();
 
@@ -10,7 +25,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_CLASSES_URL =
   'https://infnet.online/grupos/fundamentos-do-processamento-de-dados-26e1-26e2-93422564/infnet-ci-zoom-mettings/';
-const BASE_ORIGIN = 'https://infnet.online';
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -134,187 +148,9 @@ function slugify(title, index) {
   return s || `aula_${index}`;
 }
 
-function safeDirName(name) {
-  const s = String(name || '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '') // proibidos no Windows
-    .trim()
-    .replace(/\s+/g, ' ')
-    .slice(0, 80);
-  // manter legível, mas estável
-  return (s || 'Disciplina').replace(/\s/g, '_');
-}
-
-async function ensureDir(dir) {
-  await fs.mkdir(dir, { recursive: true });
-}
-
-async function fileExists(filePath) {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Chrome instalado no sistema (útil com PUPPETEER_SKIP_DOWNLOAD ou cache vazio). */
-async function detectSystemChrome() {
-  if (process.platform === 'win32') {
-    const candidates = [
-      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-      process.env.LOCALAPPDATA
-        ? path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe')
-        : null,
-    ].filter(Boolean);
-    for (const c of candidates) {
-      if (await fileExists(c)) return c;
-    }
-  } else if (process.platform === 'darwin') {
-    const mac = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-    if (await fileExists(mac)) return mac;
-  } else {
-    for (const c of ['/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium']) {
-      if (await fileExists(c)) return c;
-    }
-  }
-  return undefined;
-}
-
-function printChromeHelp() {
-  console.error('[ERRO] Puppeteer não encontrou o Chrome esperado.');
-  console.error('  A) Instale o Google Chrome e volte a correr; ou');
-  console.error(
-    '  B) No .env: PUPPETEER_EXECUTABLE_PATH=caminho\\para\\chrome.exe  (ex.: C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe); ou'
-  );
-  console.error('  C) Com espaço em disco: npx puppeteer browsers install chrome');
-}
-
-async function loadSession(filePath) {
-  try {
-    const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-async function saveSession(page, filePath) {
-  const cookies = await page.cookies();
-  const localStorageData = await page.evaluate(() => {
-    const o = {};
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      o[k] = localStorage.getItem(k);
-    }
-    return o;
-  });
-  await fs.writeFile(
-    filePath,
-    JSON.stringify({ cookies, localStorage: localStorageData }, null, 2),
-    'utf8'
-  );
-}
-
-async function applySession(page, session) {
-  if (!session?.cookies?.length) return;
-  await page.goto(`${BASE_ORIGIN}/`, {
-    waitUntil: 'domcontentloaded',
-    timeout: 120000,
-  });
-  await page.setCookie(...session.cookies);
-  if (session.localStorage && typeof session.localStorage === 'object') {
-    await page.evaluate((data) => {
-      for (const [k, v] of Object.entries(data)) {
-        if (v != null) localStorage.setItem(k, String(v));
-      }
-    }, session.localStorage);
-  }
-}
-
-async function findFirst(page, selectors) {
-  for (const sel of selectors) {
-    const el = await page.$(sel);
-    if (el) return el;
-  }
-  return null;
-}
-
-async function login(page, user, pass) {
-  const userSelectors = [
-    'input#user_login',
-    'input[name="log"]',
-    'input[type="email"]',
-    'input[placeholder*="e-mail" i]',
-  ];
-  const passSelectors = ['input#user_pass', 'input[name="pwd"]', 'input[type="password"]'];
-
-  const userEl = await findFirst(page, userSelectors);
-  const passEl = await findFirst(page, passSelectors);
-  if (!userEl || !passEl) {
-    throw new Error('Campos de login não encontrados');
-  }
-
-  await userEl.click({ clickCount: 3 });
-  await userEl.type(user, { delay: 12 });
-  await passEl.click({ clickCount: 3 });
-  await passEl.type(pass, { delay: 12 });
-
-  const submit =
-    (await page.$('input#wp-submit')) ||
-    (await page.$('input[name="wp-submit"]')) ||
-    (await page.$('button[type="submit"]'));
-
-  if (submit) {
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 90000 }).catch(() => {}),
-      submit.click(),
-    ]);
-  } else {
-    await page
-      .evaluate(() => {
-        const f = document.querySelector('form');
-        if (f) f.submit();
-      })
-      .catch(() => {});
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 90000 }).catch(() => {});
-  }
-}
-
-async function gotoClasses(page, classesUrl) {
-  await page.goto(classesUrl, {
-    waitUntil: 'domcontentloaded',
-    timeout: 120000,
-  });
-  await new Promise((r) => setTimeout(r, 800));
-}
-
-async function ensureAuthenticated(page, classesUrl, sessionPath, user, pass) {
-  const session = await loadSession(sessionPath);
-  if (session) {
-    await applySession(page, session);
-  }
-
-  await gotoClasses(page, classesUrl);
-
-  if (page.url().includes('wp-login.php')) {
-    if (!user || !pass) {
-      throw new Error('FACULDADE_USER / FACULDADE_PASS ausentes (.env)');
-    }
-    console.log('[LOGIN] Tentando autenticação…');
-    await login(page, user, pass);
-    await gotoClasses(page, classesUrl);
-    if (page.url().includes('wp-login.php')) {
-      throw new Error('[LOGIN] Falha: ainda na tela de login');
-    }
-    console.log('[LOGIN] Sucesso');
-    await saveSession(page, sessionPath);
-  } else {
-    console.log('[LOGIN] Sessão válida');
-    if (!session) await saveSession(page, sessionPath);
-  }
+/** Ritmo histórico do stripper após `goto` (domcontentloaded + 800 ms). */
+function gotoClasses(page, classesUrl) {
+  return gotoUrl(page, classesUrl, 800);
 }
 
 async function setDownloadPath(page, downloadDir) {
@@ -413,7 +249,7 @@ async function clickDriveDownload(drivePage) {
       const el = await ctx.$(sel);
       if (!el) continue;
       const box = await el.boundingBox().catch(() => null);
-const visible = await el.isIntersectingViewport().catch(() => !!box);
+      const visible = await el.isIntersectingViewport().catch(() => !!box);
       if (!visible && !box) continue;
       await el.click({ delay: 40 }).catch(async () => {
         await ctx.evaluate((s) => {
@@ -516,7 +352,9 @@ async function run() {
   const page = await browser.newPage();
 
   try {
-    await ensureAuthenticated(page, classesUrl, sessionPath, user, pass);
+    await ensureAuthenticated(page, classesUrl, sessionPath, user, pass, {
+      gotoSettleMs: 800,
+    });
   } catch (e) {
     console.error('[ERRO]', e.message);
     await browser.close();
@@ -563,10 +401,15 @@ async function run() {
   const courseName = await resolveCourseTitle(page, classesUrl);
   const totalAulas = itemData.length;
   const n = Math.min(totalAulas, limit);
+  const { manifestPath, manifestRoot } = resolveManifestRootAndPath(
+    downloadsDir,
+    downloadsDir
+  );
   console.log(`[DISCIPLINA] Baixando aulas de: ${courseName}`);
-  console.log(`[INÍCIO] Execução: ${n} aula(s) neste run (${totalAulas} listada(s) na página).`);
+  console.log(`[INÍCIO] Execução: até ${n} novo(s) download(s) (${totalAulas} listada(s) na página).`);
 
   let processed = 0;
+  let skippedAlreadyDone = 0;
 
   for (let i = 0; i < itemData.length && processed < n; i++) {
     const { title: rawTitle, href, accordionTitle } = itemData[i];
@@ -574,7 +417,19 @@ async function run() {
     const aulaNum = i + 1;
     const titleShort = title.slice(0, 72) + (title.length > 72 ? '…' : '');
     const sectionLabel = (accordionTitle && accordionTitle.trim()) || courseName;
+    const transcriptItemId = stableTranscriptItemId(href);
     try {
+      if (
+        !noDownload &&
+        (await isItemCompleted(manifestPath, transcriptItemId, {
+          verifyArtifact: true,
+          manifestRoot,
+        }))
+      ) {
+        skippedAlreadyDone++;
+        continue;
+      }
+
       console.log(
         `[EXTRAINDO] ${sectionLabel} — Aula ${aulaNum}/${totalAulas}: ${titleShort}`
       );
@@ -594,7 +449,10 @@ async function run() {
         const downloaded = await waitNewStableFile(tempDownloads, before, 120000);
         const ext = path.extname(downloaded) || '.bin';
         const slug = slugify(title, i + 1);
-        const disciplineDir = path.join(downloadsDir, safeDirName(sectionLabel));
+        const disciplineDir = path.join(
+          downloadsDir,
+          safeDirName(sectionLabel, { maxLen: 80, fallback: 'Disciplina' })
+        );
         await ensureDir(disciplineDir);
         const dest = path.join(disciplineDir, `${slug}${ext}`);
         await fs.rename(downloaded, dest);
@@ -604,7 +462,16 @@ async function run() {
           course: sectionLabel,
           downloaded_at: new Date().toISOString(),
         };
-        await toMarkdown(dest, meta);
+        const mdWritten = await toMarkdown(dest, meta);
+        await markArtifactCompletedIfPresent({
+          manifestPath,
+          manifestRoot,
+          itemId: transcriptItemId,
+          kind: 'transcript',
+          sourceUrl: href,
+          artifactAbsPath: dest,
+          markdownAbsPath: mdWritten,
+        });
         const baseName = path.basename(dest);
         console.log('[OK]', `${sectionLabel} | Aula ${aulaNum}: ${baseName}`);
       } finally {
@@ -624,6 +491,12 @@ async function run() {
       );
       await gotoClasses(page, classesUrl).catch(() => {});
     }
+  }
+
+  if (skippedAlreadyDone > 0) {
+    console.log(
+      `[IDEMPOTÊNCIA] ${skippedAlreadyDone} aula(s) já registada(s) no manifest — omitidas.`
+    );
   }
 
   await browser.close();

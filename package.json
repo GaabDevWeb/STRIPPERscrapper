@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node stripper.js",
-    "stripper": "node stripper.js"
+    "stripper": "node stripper.js",
+    "documents": "node documentsScraper.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
