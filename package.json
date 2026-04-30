@@ -4,12 +4,20 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node stripper.js",
-    "stripper": "node stripper.js"
+    "start": "node main.js",
+    "main": "node main.js",
+    "all": "node main.js --all",
+    "lessons": "node main.js --lessons",
+    "docs": "node main.js --docs",
+    "stripper": "node main.js --lessons",
+    "documents": "node main.js --docs"
   },
   "dependencies": {
+    "blessed": "^0.1.81",
+    "blessed-contrib": "^4.11.0",
+    "chalk": "^5.6.2",
+    "commander": "^12.1.0",
     "dotenv": "^16.4.5",
-    "package.json": "^2.0.1",
     "puppeteer": "^24.1.0"
   }
 }
