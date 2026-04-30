@@ -286,11 +286,5 @@ Sessão expirada ou sem permissão. Verificar `DOCUMENTS_URL` e voltar a autenti
 |-----------|--------|
 | [**documentation.md**](./documentation.md) | Referência técnica: fluxos, cluster, manifest, CLI completa, ciclo de sessão, limitações |
 | **README.md** (este ficheiro) | Onboarding e operação rápida |
-| **`VALIDACAO_SELETORES.md`** | Se existir localmente, checklist de regressão visual (pode estar no `.gitignore`) |
-| **`.agent_history.md`** | Se existir na raiz, decisões de fluxos de agente |
 
-*Em caso de divergência entre documentação e comportamento, prevalece o código em `main.js` e `src/`.*
 
----
-
-Licença e badges de CI: não definidos neste repositório; adicionar apenas com fonte verificável.
