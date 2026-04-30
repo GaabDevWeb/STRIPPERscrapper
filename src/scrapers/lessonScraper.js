@@ -14,9 +14,12 @@ import {
   resolveManifestRootAndPath,
   isItemCompleted,
   markArtifactCompletedIfPresent,
+  markArtifactError,
 } from '../utils/downloadManifest.mjs';
 import { launchBrowser } from '../utils/browser.mjs';
 import { makeTaggedLoggers } from '../utils/workerLog.mjs';
+import { withRetries } from '../utils/retry.mjs';
+import { validateBinaryFile, safeUnlink } from '../utils/integrity.mjs';
 
 const DEFAULT_CLASSES_URL =
   'https://infnet.online/grupos/fundamentos-do-processamento-de-dados-26e1-26e2-93422564/infnet-ci-zoom-mettings/';
@@ -343,6 +346,25 @@ async function clickDriveDownload(drivePage) {
   throw new Error('Botão de download não encontrado no Drive');
 }
 
+function classifyLessonError(err) {
+  const msg = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+  const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : '';
+  if (msg.includes('integrity:')) return 'integrity';
+  if (msg.includes('timeout') || msg.includes('timed out') || name === 'TimeoutError') return 'timeout';
+  if (msg.includes('net::') || msg.includes('protocol error') || msg.includes('target closed')) {
+    return 'network';
+  }
+  if (msg.includes('download não encontrado') || msg.includes('botão de download não encontrado')) {
+    return 'ui';
+  }
+  return 'unknown';
+}
+
+function isRetryableLessonError(err) {
+  const kind = classifyLessonError(err);
+  return kind === 'integrity' || kind === 'timeout' || kind === 'network';
+}
+
 function yamlScalar(value) {
   if (value == null) return '""';
   return JSON.stringify(String(value));
@@ -386,6 +408,7 @@ export async function runLessonScraper(ctx, scraperOpts = {}) {
   const { browser, page } = ctx;
   const { limit, noDownload } = parseLessonArgs();
   const { log, error } = makeTaggedLoggers(scraperOpts.logTag);
+  const progress = scraperOpts.progress || null;
   const classesUrl = process.env.CLASSES_URL || DEFAULT_CLASSES_URL;
   const user = process.env.FACULDADE_USER || '';
   const pass = process.env.FACULDADE_PASS || '';
@@ -446,6 +469,7 @@ export async function runLessonScraper(ctx, scraperOpts = {}) {
   log(
     `[INÍCIO] Execução: até ${n} novo(s) download(s) (${totalAulas} listada(s) na página).`
   );
+  progress?.status?.(`AULAS: fila com ${Math.min(workQueue.length, n)} itens`);
 
   let processed = 0;
   let skippedAlreadyDone = 0;
@@ -460,6 +484,9 @@ export async function runLessonScraper(ctx, scraperOpts = {}) {
     const aulaNum = i + 1;
     const titleShort = title.slice(0, 72) + (title.length > 72 ? '…' : '');
     const sectionLabel = (accordionTitle && accordionTitle.trim()) || courseName;
+    let attempts = 0;
+    let dest = '';
+    let mdWritten = '';
     try {
       if (
         !noDownload &&
@@ -475,6 +502,7 @@ export async function runLessonScraper(ctx, scraperOpts = {}) {
       log(
         `[EXTRAINDO] ${sectionLabel} — Aula ${aulaNum}/${totalAulas}: ${titleShort}`
       );
+      progress?.status?.(`AULAS: ${sectionLabel} — ${titleShort}`);
 
       if (noDownload) {
         log('[OK]', `(dry-run) ${sectionLabel} | Aula ${aulaNum}:`, href);
@@ -482,47 +510,83 @@ export async function runLessonScraper(ctx, scraperOpts = {}) {
         continue;
       }
 
-      const before = await listFileNames(tempDownloads);
-      const drivePage = await openTranscriptPageByIndex(browser, page, i);
-      await setDownloadPath(drivePage, tempDownloads);
-      try {
-        await drivePage.bringToFront().catch(() => {});
-        await clickDriveDownload(drivePage);
-        const downloaded = await waitNewStableFile(tempDownloads, before, 120000);
-        const ext = path.extname(downloaded) || '.bin';
-        const slug = slugify(title, i + 1);
-        const disciplineDir = path.join(
-          downloadsDir,
-          safeDirName(sectionLabel, { maxLen: 80, fallback: 'Disciplina' })
-        );
-        await ensureDir(disciplineDir);
-        const dest = path.join(disciplineDir, `${slug}${ext}`);
-        await fs.rename(downloaded, dest);
-        const meta = {
-          title,
-          source_url: href,
-          course: sectionLabel,
-          downloaded_at: new Date().toISOString(),
-        };
-        const mdWritten = await toMarkdown(dest, meta);
-        await markArtifactCompletedIfPresent({
-          manifestPath,
-          manifestRoot,
-          itemId: transcriptItemId,
-          kind: 'transcript',
-          sourceUrl: href,
-          artifactAbsPath: dest,
-          markdownAbsPath: mdWritten,
-        });
-        const baseName = path.basename(dest);
-        log('[OK]', `${sectionLabel} | Aula ${aulaNum}: ${baseName}`);
-      } finally {
-        if (drivePage !== page) {
-          await drivePage.close().catch(() => {});
+      let lastBytes = 0;
+      await withRetries(
+        async () => {
+          attempts++;
+          // limpeza best-effort antes de re-tentar
+          await safeUnlink(mdWritten);
+          await safeUnlink(dest);
+          mdWritten = '';
+          dest = '';
+
+          const before = await listFileNames(tempDownloads);
+          const drivePage = await openTranscriptPageByIndex(browser, page, i);
+          await setDownloadPath(drivePage, tempDownloads);
+          try {
+            await drivePage.bringToFront().catch(() => {});
+            await clickDriveDownload(drivePage);
+            const downloaded = await waitNewStableFile(tempDownloads, before, 120000);
+            const ext = path.extname(downloaded) || '.bin';
+            const slug = slugify(title, i + 1);
+            const disciplineDir = path.join(
+              downloadsDir,
+              safeDirName(sectionLabel, { maxLen: 80, fallback: 'Disciplina' })
+            );
+            await ensureDir(disciplineDir);
+            dest = path.join(disciplineDir, `${slug}${ext}`);
+            await fs.rename(downloaded, dest);
+
+            const integrity = await validateBinaryFile({ filePath: dest });
+            lastBytes = integrity.size || 0;
+
+            const meta = {
+              title,
+              source_url: href,
+              course: sectionLabel,
+              downloaded_at: new Date().toISOString(),
+            };
+            mdWritten = await toMarkdown(dest, meta);
+            await markArtifactCompletedIfPresent({
+              manifestPath,
+              manifestRoot,
+              itemId: transcriptItemId,
+              kind: 'transcript',
+              sourceUrl: href,
+              artifactAbsPath: dest,
+              markdownAbsPath: mdWritten,
+            });
+          } finally {
+            if (drivePage !== page) {
+              await drivePage.close().catch(() => {});
+            }
+            await page.bringToFront().catch(() => {});
+            await gotoClasses(page, classesUrl).catch(() => {});
+          }
+        },
+        {
+          retries: 3,
+          isRetryable: isRetryableLessonError,
+          onRetry: ({ attempt, retries, error: err, delayMs }) => {
+            log(
+              `[RETRY] Aula ${aulaNum}: tentativa ${attempt}/${retries} falhou (${classifyLessonError(
+                err
+              )}); aguardando ${delayMs}ms`
+            );
+            progress?.status?.(
+              `AULAS: retry ${attempt}/${retries} — ${sectionLabel} — ${titleShort}`
+            );
+          },
         }
-        await page.bringToFront().catch(() => {});
-        await gotoClasses(page, classesUrl).catch(() => {});
-      }
+      );
+
+      const baseName = dest ? path.basename(dest) : `${slugify(title, i + 1)}.bin`;
+      log('[OK]', `${sectionLabel} | Aula ${aulaNum}: ${baseName}`);
+      progress?.itemDone?.({
+        bytes: lastBytes,
+        itemId: transcriptItemId,
+        filePath: dest,
+      });
       processed++;
     } catch (err) {
       error(
@@ -531,6 +595,26 @@ export async function runLessonScraper(ctx, scraperOpts = {}) {
         titleShort,
         err instanceof Error ? err.message : err
       );
+      progress?.itemError?.({
+        itemId: transcriptItemId,
+        errorKind: classifyLessonError(err),
+        message: err instanceof Error ? err.message : String(err),
+      });
+      await safeUnlink(mdWritten);
+      await safeUnlink(dest);
+      await markArtifactError({
+        manifestPath,
+        manifestRoot,
+        itemId: transcriptItemId,
+        kind: 'transcript',
+        sourceUrl: href,
+        reason: 'download falhou após retries',
+        attempts: typeof attempts === 'number' && attempts > 0 ? attempts : 1,
+        errorKind: classifyLessonError(err),
+        lastError: err,
+        artifactAbsPath: dest || undefined,
+        markdownAbsPath: mdWritten || undefined,
+      }).catch(() => {});
       await gotoClasses(page, classesUrl).catch(() => {});
     }
   }

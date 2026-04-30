@@ -10,6 +10,7 @@ import { logSectionBanner } from './src/utils/logging.mjs';
 import { ensureDir, projectRoot } from './src/utils/infnetShared.mjs';
 import { partitionTasksForWorker } from './src/utils/shard.mjs';
 import { workerLogTag } from './src/utils/workerLog.mjs';
+import { createDashboard } from './src/utils/dashboard.mjs';
 import {
   parseLessonArgs,
   runLessonScraper,
@@ -24,6 +25,28 @@ import { isItemCompleted, resolveManifestRootAndPath } from './src/utils/downloa
 
 function hasHeadedFlag() {
   return process.argv.some((a) => a === '--headed' || a === '--show');
+}
+
+/**
+ * Adapta eventos dos scrapers para o dashboard (TUI).
+ * @param {object} p
+ * @param {number} p.wid
+ * @param {'AULAS' | 'DOCS'} p.section
+ * @param {ReturnType<typeof createDashboard>} p.dashboard
+ */
+function makeDashboardProgress(p) {
+  const { wid, section, dashboard } = p;
+  return {
+    status: (text) => dashboard.setWorkerStatus(wid, text),
+    itemDone: ({ bytes }) =>
+      dashboard.onItemDone({ count: 1, bytes: Number(bytes) || 0 }),
+    itemError: ({ message, errorKind }) => {
+      const kind = errorKind ? ` (${errorKind})` : '';
+      dashboard.onError(
+        `${workerLogTag(wid, section)}${kind} ${message || ''}`.trim()
+      );
+    },
+  };
 }
 
 function envFailFast() {
@@ -91,6 +114,7 @@ async function main() {
     .option('--lessons', 'Apenas scraper de aulas / transcrições')
     .option('--docs', 'Apenas scraper de documentos')
     .option('--fail-fast', 'Após erro fatal num módulo, não executar o seguinte (modo sequencial)')
+    .option('--no-dashboard', 'Desativar dashboard TUI (força logs simples)')
     .option(
       '--workers <n>',
       'Número de browsers em paralelo no modo cluster (>=1)',
@@ -119,6 +143,8 @@ async function main() {
   const workers =
     Number.isFinite(workersRaw) && workersRaw >= 1 ? Math.floor(workersRaw) : 2;
   const sequential = Boolean(o.sequential);
+  const wantsDashboard = !Boolean(o.noDashboard);
+  const canDashboard = Boolean(process.stdout.isTTY) && wantsDashboard;
 
   const { noDownload, limit: lessonLimit } = parseLessonArgs();
   const docArgs = parseDocumentArgs();
@@ -137,6 +163,8 @@ async function main() {
       runD,
       headed,
       failFast,
+      dashboardEnabled: canDashboard,
+      downloadsDir,
     });
     return;
   }
@@ -201,6 +229,16 @@ async function main() {
   const workerHeaded = headed;
   const workerSlots = Array.from({ length: workers }, (_, w) => w);
 
+  const totalItems = pendingLessons.length + pendingDocs.length;
+  const dashboard = createDashboard({
+    enabled: canDashboard,
+    title: 'StripperScrapper — Dashboard',
+    workers,
+    renderFps: 10,
+  });
+  dashboard.setTotals(totalItems);
+  const restoreConsole = dashboard.captureConsole();
+
   const results = await Promise.all(
     workerSlots.map(async (workerIndex) => {
       const wid = workerIndex + 1;
@@ -215,11 +253,14 @@ async function main() {
 
       let browser;
       try {
+        dashboard.setWorkerStatus(wid, 'A iniciar browser…');
         browser = await launchBrowser({
           headed: workerHeaded,
           preferHeadlessUnlessHeaded: true,
         });
       } catch {
+        dashboard.onError(`${workerLogTag(wid, 'ORQ')} Falha ao lançar browser`);
+        dashboard.setWorkerStatus(wid, 'Falha ao lançar browser');
         return {
           wid,
           ok: false,
@@ -234,6 +275,10 @@ async function main() {
       let docError = null;
       try {
         if (lessonShard.length) {
+          dashboard.setWorkerStatus(
+            wid,
+            `AULAS: ${lessonShard.length} itens (em execução)`
+          );
           try {
             await runLessonScraper(
               { browser, page },
@@ -243,33 +288,58 @@ async function main() {
                 totalDomItems: totalDomItems || lessonShard.length,
                 logTag: workerLogTag(wid, 'AULAS'),
                 tempDownloadsDir: tempLesson,
+                progress: makeDashboardProgress({ wid, section: 'AULAS', dashboard }),
               }
             );
+            dashboard.setWorkerStatus(wid, 'AULAS: concluído');
           } catch (e) {
             lessonError = e instanceof Error ? e : new Error(String(e));
             console.error(
               workerLogTag(wid, 'AULAS'),
               chalk.red(lessonError.message)
             );
+            dashboard.onError(
+              `${workerLogTag(wid, 'AULAS')} ${lessonError.message || String(lessonError)}`
+            );
+            dashboard.setWorkerStatus(wid, 'AULAS: erro');
           }
+        } else if (runL) {
+          dashboard.setWorkerStatus(wid, 'AULAS: (nenhum item no shard)');
         }
         const skipDocs = Boolean(failFast && lessonError && runL);
         if (runD && docShard.length && !skipDocs) {
+          dashboard.setWorkerStatus(
+            wid,
+            `DOCS: ${docShard.length} itens (em execução)`
+          );
           try {
             await runDocumentScraper(
               { browser, page },
               {
                 tasks: docShard,
                 logTag: workerLogTag(wid, 'DOCS'),
+                progress: makeDashboardProgress({ wid, section: 'DOCS', dashboard }),
               }
             );
+            dashboard.setWorkerStatus(wid, 'DOCS: concluído');
           } catch (e2) {
             docError = e2 instanceof Error ? e2 : new Error(String(e2));
             console.error(workerLogTag(wid, 'DOCS'), chalk.red(docError.message));
+            dashboard.onError(
+              `${workerLogTag(wid, 'DOCS')} ${docError.message || String(docError)}`
+            );
+            dashboard.setWorkerStatus(wid, 'DOCS: erro');
           }
+        } else if (runD && docShard.length && skipDocs) {
+          dashboard.setWorkerStatus(wid, 'DOCS: skip (fail-fast após erro em aulas)');
+        } else if (runD && !docShard.length) {
+          dashboard.setWorkerStatus(wid, 'DOCS: (nenhum item no shard)');
         }
       } finally {
         await browser.close().catch(() => {});
+      }
+      if (!lessonError && !docError) {
+        dashboard.setWorkerStatus(wid, 'OK');
       }
       return {
         wid,
@@ -283,37 +353,43 @@ async function main() {
 
   const failed = results.filter((r) => r.lessonError || r.docError);
   const okCount = results.filter((r) => r.ok).length;
-  console.log('');
-  console.log(
-    chalk.bold.green('[ORQUESTRADOR]'),
-    'Resumo cluster:',
-    chalk.green(`workers OK (sem exceção): ${okCount}/${workers}`),
-    failed.length ? chalk.red(`com falhas: ${failed.length}`) : ''
-  );
-  for (const r of results) {
-    if (r.skipped) {
-      console.log(chalk.yellow(`  [WORKER-${r.wid}] browser não arrancou`));
-      continue;
-    }
-    const bits = [];
-    bits.push(r.lessonError ? chalk.red('aulas: erro') : chalk.green('aulas: ok'));
-    bits.push(r.docError ? chalk.red('docs: erro') : chalk.green('docs: ok'));
-    console.log(`  [WORKER-${r.wid}]`, ...bits);
-  }
-  console.log('');
+  const clusterOk = !(failed.length || results.some((r) => r.skipped));
+  restoreConsole();
+  dashboard.finalizeAndPrintSummary({
+    ok: clusterOk,
+    downloadsDir,
+    outputDir: discoveredDocs.outputDir,
+    workers,
+  });
 
-  if (failed.length || results.some((r) => r.skipped)) {
+  if (!clusterOk) {
     process.exitCode = 1;
   }
 }
 
 /**
- * @param {{ runL: boolean; runD: boolean; headed: boolean; failFast: boolean }} p
+ * @param {{
+ *   runL: boolean;
+ *   runD: boolean;
+ *   headed: boolean;
+ *   failFast: boolean;
+ *   dashboardEnabled: boolean;
+ *   downloadsDir: string;
+ * }} p
  */
 async function runSequentialOrchestrator(p) {
-  const { runL, runD, headed, failFast } = p;
+  const { runL, runD, headed, failFast, dashboardEnabled, downloadsDir } = p;
+  const dashboard = createDashboard({
+    enabled: dashboardEnabled,
+    title: 'StripperScrapper — Dashboard',
+    workers: 1,
+    renderFps: 10,
+  });
+  const restoreConsole = dashboard.captureConsole();
+
   let browser;
   try {
+    dashboard.setWorkerStatus(1, 'A iniciar browser…');
     browser = await launchBrowser({ headed });
   } catch {
     process.exit(1);
@@ -330,13 +406,22 @@ async function runSequentialOrchestrator(p) {
         'Zoom Infnet + Google Drive (CLASSES_URL)'
       );
       try {
-        await runLessonScraper({ browser, page });
+        dashboard.setWorkerStatus(1, 'AULAS: em execução');
+        await runLessonScraper(
+          { browser, page },
+          { progress: makeDashboardProgress({ wid: 1, section: 'AULAS', dashboard }) }
+        );
+        dashboard.setWorkerStatus(1, 'AULAS: concluído');
       } catch (e) {
         moduleFailed = true;
         console.error(
           '[ORQUESTRADOR] Módulo aulas:',
           e instanceof Error ? e.message : e
         );
+        dashboard.onError(
+          `[ORQUESTRADOR][AULAS] ${e instanceof Error ? e.message : String(e)}`
+        );
+        dashboard.setWorkerStatus(1, 'AULAS: erro');
         if (failFast) {
           console.error('[ORQUESTRADOR] fail-fast: a saltar documentos.');
           return;
@@ -347,19 +432,35 @@ async function runSequentialOrchestrator(p) {
     if (runD && !(failFast && moduleFailed)) {
       logSectionBanner('DOCUMENTOS', 'BuddyPress /documents (DOCUMENTS_URL)');
       try {
-        await runDocumentScraper({ browser, page });
+        dashboard.setWorkerStatus(1, 'DOCS: em execução');
+        await runDocumentScraper(
+          { browser, page },
+          { progress: makeDashboardProgress({ wid: 1, section: 'DOCS', dashboard }) }
+        );
+        dashboard.setWorkerStatus(1, 'DOCS: concluído');
       } catch (e) {
         moduleFailed = true;
         console.error(
           '[ORQUESTRADOR] Módulo documentos:',
           e instanceof Error ? e.message : e
         );
+        dashboard.onError(
+          `[ORQUESTRADOR][DOCS] ${e instanceof Error ? e.message : String(e)}`
+        );
+        dashboard.setWorkerStatus(1, 'DOCS: erro');
       }
     }
   } finally {
     console.log('[ORQUESTRADOR] A fechar o browser…');
     await browser.close().catch(() => {});
   }
+
+  restoreConsole();
+  dashboard.finalizeAndPrintSummary({
+    ok: !moduleFailed,
+    downloadsDir,
+    workers: 1,
+  });
 
   if (moduleFailed) process.exitCode = 1;
 }

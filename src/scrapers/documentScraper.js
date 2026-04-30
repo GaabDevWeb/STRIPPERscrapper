@@ -23,9 +23,12 @@ import {
   resolveManifestRootAndPath,
   isItemCompleted,
   markArtifactCompletedIfPresent,
+  markArtifactError,
 } from '../utils/downloadManifest.mjs';
 import { launchBrowser } from '../utils/browser.mjs';
 import { makeTaggedLoggers } from '../utils/workerLog.mjs';
+import { withRetries } from '../utils/retry.mjs';
+import { validateBinaryFile, safeUnlink } from '../utils/integrity.mjs';
 
 const DEFAULT_DOCUMENTS_URL =
   'https://infnet.online/grupos/fundamentos-do-processamento-de-dados-26e1-26e2-93422564/documents/';
@@ -195,7 +198,8 @@ async function downloadBinaryWithSession(page, fileUrl, destPath, opts) {
       throw new Error(`HTTP ${res.status} ${res.statusText}`);
     }
     const cl = res.headers.get('content-length');
-    if (cl && Number(cl) > maxBytes) {
+    const expectedBytes = cl && /^\d+$/.test(cl) ? Number(cl) : undefined;
+    if (expectedBytes != null && expectedBytes > maxBytes) {
       throw new Error(`content-length ${cl} acima do limite ${maxBytes}`);
     }
     const body = res.body;
@@ -221,21 +225,37 @@ async function downloadBinaryWithSession(page, fileUrl, destPath, opts) {
       await fs.unlink(destPath).catch(() => {});
       throw new Error('ficheiro vazio');
     }
-    const sniff = Buffer.alloc(80);
-    const fh = await fs.open(destPath, 'r');
-    try {
-      await fh.read(sniff, 0, 80, 0);
-    } finally {
-      await fh.close();
-    }
-    const head = sniff.toString('utf8').trimStart().toLowerCase();
-    if (head.startsWith('<!doctype') || head.startsWith('<html')) {
-      await fs.unlink(destPath).catch(() => {});
-      throw new Error('resposta foi HTML (sessão expirada ou sem permissão)');
-    }
+    return { writtenBytes: written, expectedBytes };
   } finally {
     clearTimeout(timer);
   }
+}
+
+function classifyDocumentError(err) {
+  const msg = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+  const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : '';
+  const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : '';
+
+  if (msg.includes('integrity:')) return 'integrity';
+  if (msg.includes('parece html') || msg.includes('resposta foi html')) return 'html';
+  if (msg.includes('timeout') || name === 'AbortError' || code === 'ABORT_ERR') return 'timeout';
+  if (msg.startsWith('http 5') || msg.includes('http 429')) return 'http';
+  if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'EAI_AGAIN' || code === 'ENOTFOUND') {
+    return 'network';
+  }
+  if (msg.includes('fetch failed')) return 'network';
+  return 'unknown';
+}
+
+function isRetryableDocumentError(err) {
+  const kind = classifyDocumentError(err);
+  if (kind === 'integrity' || kind === 'timeout' || kind === 'network') return true;
+  if (kind === 'http') {
+    const msg = err instanceof Error ? err.message : String(err || '');
+    return /HTTP\s+5\d\d\b/.test(msg) || /HTTP\s+429\b/.test(msg);
+  }
+  // HTML geralmente é sessão expirada/permissão; pode recuperar mas sem reauth explícito tende a repetir.
+  return false;
 }
 
 /**
@@ -340,6 +360,7 @@ export async function runDocumentScraper(ctx, scraperOpts = {}) {
   const { documentsUrl, outputDir, dryRun, ignoreManifest, maxDepth, extensions } =
     parseDocumentArgs();
   const { log, error, warn } = makeTaggedLoggers(scraperOpts.logTag);
+  const progress = scraperOpts.progress || null;
 
   const user = process.env.FACULDADE_USER || '';
   const pass = process.env.FACULDADE_PASS || '';
@@ -407,26 +428,75 @@ export async function runDocumentScraper(ctx, scraperOpts = {}) {
         );
         continue;
       }
+      progress?.status?.(`DOCS: baixando ${path.relative(outputDir, destPath) || base}`);
+      let attempts = 0;
+      let lastBytes = 0;
       try {
-        await downloadBinaryWithSession(page, file.downloadUrl, destPath, {
-          maxBytes,
-          referer: file.listUrl,
-          fetchTimeoutMs,
+        await withRetries(
+          async () => {
+            attempts++;
+            await safeUnlink(destPath);
+            const { writtenBytes, expectedBytes } = await downloadBinaryWithSession(
+              page,
+              file.downloadUrl,
+              destPath,
+              {
+                maxBytes,
+                referer: file.listUrl,
+                fetchTimeoutMs,
+              }
+            );
+            lastBytes = writtenBytes || 0;
+            await validateBinaryFile({ filePath: destPath, expectedBytes });
+            await markArtifactCompletedIfPresent({
+              manifestPath,
+              manifestRoot,
+              itemId: documentItemId,
+              kind: 'document',
+              sourceUrl: file.downloadUrl,
+              artifactAbsPath: destPath,
+            });
+          },
+          {
+            retries: 3,
+            isRetryable: isRetryableDocumentError,
+            onRetry: ({ attempt, retries, error: err, delayMs }) => {
+              warn(
+                `  [RETRY] ${base} — tentativa ${attempt}/${retries} falhou (${classifyDocumentError(
+                  err
+                )}); aguardando ${delayMs}ms`
+              );
+              progress?.status?.(
+                `DOCS: retry ${attempt}/${retries} — ${path.relative(outputDir, destPath) || base}`
+              );
+            },
+          }
+        );
+        downloaded++;
+        log(`  [OK] ${path.relative(projectRoot, destPath)}`);
+        progress?.itemDone?.({ bytes: lastBytes, itemId: documentItemId, filePath: destPath });
+        progress?.status?.(`DOCS: OK — ${path.relative(outputDir, destPath) || base}`);
+      } catch (e) {
+        errors++;
+        error(`  [ERRO] ${base}`, e instanceof Error ? e.message : e);
+        await safeUnlink(destPath);
+        progress?.itemError?.({
+          itemId: documentItemId,
+          errorKind: classifyDocumentError(e),
+          message: e instanceof Error ? e.message : String(e),
         });
-        await markArtifactCompletedIfPresent({
+        await markArtifactError({
           manifestPath,
           manifestRoot,
           itemId: documentItemId,
           kind: 'document',
           sourceUrl: file.downloadUrl,
-          artifactAbsPath: destPath,
-        });
-        downloaded++;
-        log(`  [OK] ${path.relative(projectRoot, destPath)}`);
-      } catch (e) {
-        errors++;
-        error(`  [ERRO] ${base}`, e instanceof Error ? e.message : e);
-        await fs.unlink(destPath).catch(() => {});
+          reason: 'download falhou após retries',
+          attempts: typeof attempts === 'number' && attempts > 0 ? attempts : 1,
+          errorKind: classifyDocumentError(e),
+          lastError: e,
+        }).catch(() => {});
+        progress?.status?.(`DOCS: erro — ${path.relative(outputDir, destPath) || base}`);
       }
     }
   } else {
@@ -502,26 +572,75 @@ export async function runDocumentScraper(ctx, scraperOpts = {}) {
           );
           continue;
         }
+        progress?.status?.(`DOCS: baixando ${path.relative(outputDir, destPath) || base}`);
+        let attempts = 0;
+        let lastBytes = 0;
         try {
-          await downloadBinaryWithSession(page, file.downloadUrl, destPath, {
-            maxBytes,
-            referer: job.listUrl,
-            fetchTimeoutMs,
+          await withRetries(
+            async () => {
+              attempts++;
+              await safeUnlink(destPath);
+              const { writtenBytes, expectedBytes } = await downloadBinaryWithSession(
+                page,
+                file.downloadUrl,
+                destPath,
+                {
+                  maxBytes,
+                  referer: job.listUrl,
+                  fetchTimeoutMs,
+                }
+              );
+              lastBytes = writtenBytes || 0;
+              await validateBinaryFile({ filePath: destPath, expectedBytes });
+              await markArtifactCompletedIfPresent({
+                manifestPath,
+                manifestRoot,
+                itemId: documentItemId,
+                kind: 'document',
+                sourceUrl: file.downloadUrl,
+                artifactAbsPath: destPath,
+              });
+            },
+            {
+              retries: 3,
+              isRetryable: isRetryableDocumentError,
+              onRetry: ({ attempt, retries, error: err, delayMs }) => {
+                warn(
+                  `  [RETRY] ${base} — tentativa ${attempt}/${retries} falhou (${classifyDocumentError(
+                    err
+                  )}); aguardando ${delayMs}ms`
+                );
+                progress?.status?.(
+                  `DOCS: retry ${attempt}/${retries} — ${path.relative(outputDir, destPath) || base}`
+                );
+              },
+            }
+          );
+          downloaded++;
+          log(`  [OK] ${path.relative(projectRoot, destPath)}`);
+          progress?.itemDone?.({ bytes: lastBytes, itemId: documentItemId, filePath: destPath });
+          progress?.status?.(`DOCS: OK — ${path.relative(outputDir, destPath) || base}`);
+        } catch (e) {
+          errors++;
+          error(`  [ERRO] ${base}`, e instanceof Error ? e.message : e);
+          await safeUnlink(destPath);
+          progress?.itemError?.({
+            itemId: documentItemId,
+            errorKind: classifyDocumentError(e),
+            message: e instanceof Error ? e.message : String(e),
           });
-          await markArtifactCompletedIfPresent({
+          await markArtifactError({
             manifestPath,
             manifestRoot,
             itemId: documentItemId,
             kind: 'document',
             sourceUrl: file.downloadUrl,
-            artifactAbsPath: destPath,
-          });
-          downloaded++;
-          log(`  [OK] ${path.relative(projectRoot, destPath)}`);
-        } catch (e) {
-          errors++;
-          error(`  [ERRO] ${base}`, e instanceof Error ? e.message : e);
-          await fs.unlink(destPath).catch(() => {});
+            reason: 'download falhou após retries',
+            attempts: typeof attempts === 'number' && attempts > 0 ? attempts : 1,
+            errorKind: classifyDocumentError(e),
+            lastError: e,
+          }).catch(() => {});
+          progress?.status?.(`DOCS: erro — ${path.relative(outputDir, destPath) || base}`);
         }
       }
     }

@@ -14,11 +14,17 @@ export const MANIFEST_VERSION = 1;
 /**
  * @typedef {object} ManifestEntry
  * @property {ManifestKind} kind
- * @property {'completed'} status
+ * @property {'completed' | 'error'} status
  * @property {string} sourceUrl
- * @property {string} artifactRelPath — relativo a `manifestRoot` (POSIX)
+ * @property {string} [artifactRelPath] — relativo a `manifestRoot` (POSIX)
  * @property {string} [markdownRelPath] — transcrições: .md adjacente
- * @property {string} completedAt — ISO-8601
+ * @property {string} [completedAt] — ISO-8601
+ * @property {string} [errorAt] — ISO-8601
+ * @property {string} [errorKind] — classificação estável (ex.: network|timeout|http|integrity|html|unknown)
+ * @property {string} [reason] — mensagem curta auditável
+ * @property {number} [attempts]
+ * @property {string} [lastErrorAt] — ISO-8601 (última tentativa)
+ * @property {string} [lastError] — mensagem (sanitizada) do último erro
  */
 
 /**
@@ -339,6 +345,72 @@ export async function markArtifactCompletedIfPresent(opts) {
       completedAt: new Date().toISOString(),
     };
     if (markdownRelPath) entry.markdownRelPath = markdownRelPath;
+    doc.entries[itemId] = entry;
+  });
+}
+
+function stringifyError(err) {
+  if (!err) return '';
+  if (err instanceof Error) {
+    // evita stacks gigantes e mantém auditável
+    const msg = err.message || String(err);
+    return msg.slice(0, 1600);
+  }
+  return String(err).slice(0, 1600);
+}
+
+/**
+ * Dead-letter: regista erro final após esgotar tentativas.
+ *
+ * @param {object} opts
+ * @param {string} opts.manifestPath
+ * @param {string} opts.manifestRoot
+ * @param {string} opts.itemId
+ * @param {ManifestKind} opts.kind
+ * @param {string} opts.sourceUrl
+ * @param {string} opts.reason
+ * @param {number} opts.attempts
+ * @param {string} [opts.errorKind]
+ * @param {unknown} [opts.lastError]
+ * @param {string} [opts.artifactAbsPath]
+ * @param {string} [opts.markdownAbsPath]
+ */
+export async function markArtifactError(opts) {
+  const {
+    manifestPath,
+    manifestRoot,
+    itemId,
+    kind,
+    sourceUrl,
+    reason,
+    attempts,
+    errorKind,
+    lastError,
+    artifactAbsPath,
+    markdownAbsPath,
+  } = opts;
+
+  const artifactRelPath = artifactAbsPath ? posixRel(manifestRoot, artifactAbsPath) : undefined;
+  const markdownRelPath = markdownAbsPath
+    ? posixRel(manifestRoot, markdownAbsPath)
+    : undefined;
+
+  const now = new Date().toISOString();
+  await updateManifest(manifestPath, (doc) => {
+    /** @type {ManifestEntry} */
+    const entry = {
+      kind,
+      status: 'error',
+      sourceUrl: normalizeUrlForId(sourceUrl),
+      reason: String(reason || '').slice(0, 1200),
+      attempts: Number(attempts) || 0,
+      errorAt: now,
+      lastErrorAt: now,
+      lastError: stringifyError(lastError),
+    };
+    if (artifactRelPath) entry.artifactRelPath = artifactRelPath;
+    if (markdownRelPath) entry.markdownRelPath = markdownRelPath;
+    if (errorKind) entry.errorKind = String(errorKind).slice(0, 120);
     doc.entries[itemId] = entry;
   });
 }

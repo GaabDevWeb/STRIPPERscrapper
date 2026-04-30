@@ -336,12 +336,30 @@ Em modo cluster, recomenda-se que cada worker use um diretório temporário pró
 | `logging.mjs` | Banners `[SEÇÃO]` entre blocos do orquestrador. |
 | `workerLog.mjs` | Prefixos e cores por worker no modo cluster. |
 | `shard.mjs` | Particionamento determinístico de tarefas por worker. |
+| `retry.mjs` | Helper `withRetries` com backoff + jitter (até 3 tentativas por item, por defeito). |
+| `integrity.mjs` | Validação de integridade do ficheiro no disco (não vazio, não-HTML, size esperado quando disponível). |
+| `dashboard.mjs` | Dashboard TUI no terminal (blessed + blessed-contrib), agregando progresso global, status por worker, throughput/ETA e logs. |
 
 ---
 
 ## Manifest e idempotência
 
 O ficheiro **`downloads/manifest.json`** (ou sob a raiz de saída dos documentos quando esta está fora de `downloads/`) regista entradas por **ID estável** (`transcript:gdrv:…`, `document:bp:…`, ou hash de URL). Antes de voltar a descarregar, `isItemCompleted` pode exigir que os ficheiros no disco ainda existam (`verifyArtifact` + `manifestRoot`), para evitar omitir download após apagamento manual.
+
+Além de `status: "completed"`, o manifest pode registar **DLQ** (dead-letter) com `status: "error"` quando um item falha **após retries**. Estas entradas preservam motivo e classificação (`errorKind`) para auditoria.
+
+---
+
+## Health Check / Auto-Recovery (retries + DLQ + integridade)
+
+O projeto implementa um ciclo de resiliência por item descarregado:
+
+- **Retries**: falhas transitórias de rede/timeout e falhas de integridade repetem até **3** tentativas (backoff + jitter).
+- **Validação de integridade** (antes de marcar como concluído):
+  - ficheiro existe e `size > 0`
+  - sniff simples para evitar gravar HTML (sessão expirada / permissão)
+  - em documentos, quando o servidor expõe `content-length`, valida-se tamanho esperado
+- **DLQ**: se um item falhar após retries, é registado no `manifest.json` com `status: "error"` e campos como `reason`, `attempts`, `lastError`, `errorKind`.
 
 ---
 
@@ -435,6 +453,10 @@ await runLessonScraperStandalone();
 | `PUPPETEER_EXECUTABLE_PATH` | Condicional | Caminho absoluto para o Chrome se a resolução automática falhar. |
 | `HEADLESS` | Não | `0` força browser visível (junto com `--headed`). |
 | `ORCHESTRATOR_FAIL_FAST` | Não | `1` / `true` / `yes` — mesmo efeito que `--fail-fast` no `main.js`. |
+
+### Flags CLI adicionais (orquestrador)
+
+- `--no-dashboard`: desativa o dashboard TUI e força logs simples (útil em CI / piping).
 
 ### Variáveis de ambiente — documentos
 

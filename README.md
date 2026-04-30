@@ -54,6 +54,10 @@ Plataformas académicas costumam expor transcrições através de páginas auten
    - `npm start -- --all --workers 4`
    - `npm start -- --all --sequential` (força o modo antigo)
 
+   O **Dashboard TUI** é o padrão (quando há TTY). Para desativar:
+
+   - `npm start -- --all --workers 4 --no-dashboard`
+
 ## Visão do sistema
 
 ```mermaid
