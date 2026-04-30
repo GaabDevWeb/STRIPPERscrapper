@@ -1,33 +1,27 @@
-import puppeteer from 'puppeteer';
-import dotenv from 'dotenv';
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
 import {
+  projectRoot,
   ensureDir,
   fileExists,
-  detectSystemChrome,
   printChromeHelp,
   ensureAuthenticated,
   safeDirName,
   gotoUrl,
-} from './lib/infnetShared.mjs';
+} from '../utils/infnetShared.mjs';
 import {
   stableTranscriptItemId,
   resolveManifestRootAndPath,
   isItemCompleted,
   markArtifactCompletedIfPresent,
-} from './lib/downloadManifest.mjs';
-
-dotenv.config();
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+} from '../utils/downloadManifest.mjs';
+import { launchBrowser } from '../utils/browser.mjs';
 
 const DEFAULT_CLASSES_URL =
   'https://infnet.online/grupos/fundamentos-do-processamento-de-dados-26e1-26e2-93422564/infnet-ci-zoom-mettings/';
 
-function parseArgs() {
-  const args = process.argv.slice(2);
+/** @param {string[]} [args] */
+export function parseLessonArgs(args = process.argv.slice(2)) {
   let limit = Infinity;
   let noDownload = false;
   let headed = false;
@@ -148,7 +142,6 @@ function slugify(title, index) {
   return s || `aula_${index}`;
 }
 
-/** Ritmo histórico do stripper após `goto` (domcontentloaded + 800 ms). */
 function gotoClasses(page, classesUrl) {
   return gotoUrl(page, classesUrl, 800);
 }
@@ -304,62 +297,29 @@ export async function toMarkdown(filePath, metadata) {
   return mdPath;
 }
 
-async function run() {
-  const { limit, noDownload, headed } = parseArgs();
+/**
+ * Transcrições / aulas (Zoom Infnet + Drive). Não fecha o browser.
+ *
+ * @param {object} ctx
+ * @param {import('puppeteer').Browser} ctx.browser
+ * @param {import('puppeteer').Page} ctx.page
+ */
+export async function runLessonScraper(ctx) {
+  const { browser, page } = ctx;
+  const { limit, noDownload } = parseLessonArgs();
   const classesUrl = process.env.CLASSES_URL || DEFAULT_CLASSES_URL;
   const user = process.env.FACULDADE_USER || '';
   const pass = process.env.FACULDADE_PASS || '';
-  const sessionPath = path.join(__dirname, 'session.json');
-  const downloadsDir = path.join(__dirname, 'downloads');
-  const tempDownloads = path.join(__dirname, 'temp_downloads');
+  const sessionPath = path.join(projectRoot, 'session.json');
+  const downloadsDir = path.join(projectRoot, 'downloads');
+  const tempDownloads = path.join(projectRoot, 'temp_downloads');
 
   await ensureDir(downloadsDir);
   await ensureDir(tempDownloads);
 
-  let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
-  if (executablePath && !(await fileExists(executablePath))) {
-    console.error('[ERRO] PUPPETEER_EXECUTABLE_PATH não existe:', executablePath);
-    printChromeHelp();
-    process.exit(1);
-  }
-  if (!executablePath) {
-    executablePath = await detectSystemChrome();
-  }
-
-  const showBrowser = headed || process.env.HEADLESS === '0';
-  if (showBrowser) {
-    console.log('[UI] Browser visível (use --headed ou HEADLESS=0 no .env)');
-  }
-
-  const launchOpts = {
-    headless: !showBrowser,
-    defaultViewport: showBrowser ? null : { width: 1280, height: 900 },
-    ...(executablePath ? { executablePath } : {}),
-  };
-
-  let browser;
-  try {
-    browser = await puppeteer.launch(launchOpts);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes('Could not find Chrome')) {
-      printChromeHelp();
-      process.exit(1);
-    }
-    throw e;
-  }
-
-  const page = await browser.newPage();
-
-  try {
-    await ensureAuthenticated(page, classesUrl, sessionPath, user, pass, {
-      gotoSettleMs: 800,
-    });
-  } catch (e) {
-    console.error('[ERRO]', e.message);
-    await browser.close();
-    process.exit(1);
-  }
+  await ensureAuthenticated(page, classesUrl, sessionPath, user, pass, {
+    gotoSettleMs: 800,
+  });
 
   const itemData = await page.evaluate(() => {
     const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
@@ -394,7 +354,6 @@ async function run() {
       snippet: document.body ? document.body.innerText.slice(0, 400).replace(/\s+/g, ' ') : '',
     }));
     console.log('[ERRO]', 'Nenhum .infnetci-recording-item encontrado', JSON.stringify(diag));
-    await browser.close();
     return;
   }
 
@@ -487,7 +446,7 @@ async function run() {
         '[ERRO]',
         `${sectionLabel} | Aula ${aulaNum}:`,
         titleShort,
-        err.message
+        err instanceof Error ? err.message : err
       );
       await gotoClasses(page, classesUrl).catch(() => {});
     }
@@ -498,14 +457,31 @@ async function run() {
       `[IDEMPOTÊNCIA] ${skippedAlreadyDone} aula(s) já registada(s) no manifest — omitidas.`
     );
   }
-
-  await browser.close();
 }
 
-const isMain =
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+export async function runLessonScraperStandalone() {
+  const { headed } = parseLessonArgs();
+  let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
+  if (executablePath && !(await fileExists(executablePath))) {
+    console.error('[ERRO] PUPPETEER_EXECUTABLE_PATH não existe:', executablePath);
+    printChromeHelp();
+    process.exit(1);
+  }
 
-if (isMain) {
-  run();
+  let browser;
+  try {
+    browser = await launchBrowser({ headed });
+  } catch {
+    process.exit(1);
+  }
+
+  const page = await browser.newPage();
+  try {
+    await runLessonScraper({ browser, page });
+  } catch (e) {
+    console.error('[ERRO]', e instanceof Error ? e.message : e);
+    process.exitCode = 1;
+  } finally {
+    await browser.close().catch(() => {});
+  }
 }

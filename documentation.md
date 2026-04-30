@@ -9,7 +9,12 @@
 - [O que o projeto faz (e o que não faz)](#o-que-o-projeto-faz-e-o-que-não-faz)
 - [Stack e pré-requisitos](#stack-e-pré-requisitos)
 - [Visão do sistema](#visão-do-sistema)
-- [Arquitetura e módulo `stripper.js`](#arquitetura-e-módulo-stripperjs)
+- [Estrutura de pastas e entrypoints](#estrutura-de-pastas-e-entrypoints)
+- [Orquestrador `main.js`](#orquestrador-mainjs)
+- [Módulo de aulas — `lessonScraper.js`](#módulo-de-aulas--lessonscraperjs)
+- [Módulo de documentos — `documentScraper.js`](#módulo-de-documentos--documentscraperjs)
+- [Utilitários `src/utils/`](#utilitários-srcutils)
+- [Manifest e idempotência](#manifest-e-idempotência)
 - [Fluxos de dados e estado](#fluxos-de-dados-e-estado)
 - [Ciclo de vida da sessão](#ciclo-de-vida-da-sessão)
 - [Referência CLI e variáveis de ambiente](#referência-cli-e-variáveis-de-ambiente)
@@ -24,12 +29,14 @@
 
 ## Visão geral
 
-**StripperScrapper** é uma ferramenta **local** (Node.js + Puppeteer) que automatiza o percurso de um utilizador autenticado no portal académico **Infnet** (`infnet.online`, WordPress), navega até à página de reuniões/gravações com links para transcrições (tipicamente abertas no **Google Drive**), aciona o fluxo de download e **materializa** no disco:
+**StripperScrapper** é uma ferramenta **local** (Node.js + Puppeteer) que automatiza, para um utilizador autenticado no portal académico **Infnet** (`infnet.online`, WordPress):
 
-1. O ficheiro de transcrição (ex.: `.vtt` ou outro formato que o Drive entregar).
-2. Um ficheiro **Markdown** adjacente com **YAML front-matter** (metadados normalizados para arquivo, notas ou pipelines tipo RAG).
+1. **Aulas / transcrições** — navegação até à página de reuniões/gravações, links para transcrições (tipicamente **Google Drive**), download via CDP e materialização em `downloads/<secção>/` com `.md` adjacente.
+2. **Documentos BuddyPress** — percurso recursivo em `/documents/` e pastas, extração de URLs no DOM, download com **cookies da sessão** via `fetch` no Node.
 
-Não existe servidor HTTP, fila de jobs nem API exposta: tudo corre num único processo na máquina do utilizador.
+O **ponto de entrada recomendado** é [`main.js`](./main.js): um único processo pode correr **só aulas**, **só documentos** ou **ambos em sequência** com **uma instância do browser** (menos logins redundantes). Cada scraper exporta `run*ScraperStandalone()` para arranque isolado (browser próprio), útil em depuração.
+
+Não existe servidor HTTP, fila de jobs nem API exposta: tudo corre na máquina do utilizador.
 
 ---
 
@@ -37,11 +44,11 @@ Não existe servidor HTTP, fila de jobs nem API exposta: tudo corre num único p
 
 | Aspeto | Descrição |
 |--------|-----------|
-| **Problema** | Transcrições ficam atrás de login e de UI web (Drive), sem endpoint público estável para integração. |
-| **Solução** | Replicar o fluxo humano com browser controlado, CDP para pasta de download e pós-processamento mínimo (rename + `.md`). |
+| **Problema** | Conteúdos ficam atrás de login e de UI web (Drive, listagens BuddyPress), sem endpoint público estável para integração. |
+| **Solução** | Replicar o fluxo humano com browser controlado; transcrições com CDP + rename + `.md`; documentos com `fetch` autenticado. |
 | **Quem usa** | Alunos ou equipas com **acesso legítimo** ao conteúdo da própria turma, que queiram **cópia local** organizada. |
 
-O nome do repositório é um jogo de palavras com “strip” (extração) e “scraper”; o âmbito é **extração de transcrições** para uso pessoal/académico autorizado, não exploração de terceiros.
+O nome do repositório é um jogo de palavras com “strip” (extração) e “scraper”; o âmbito é **extração autorizada** para uso pessoal/académico, não exploração de terceiros.
 
 ---
 
@@ -49,16 +56,17 @@ O nome do repositório é um jogo de palavras com “strip” (extração) e “
 
 **Faz**
 
-- Arranca Chrome (ou caminho definido em env), opcionalmente em modo headed.
-- Reutiliza ou cria `session.json` (cookies + `localStorage`).
-- Lista itens `.infnetci-recording-item` com `.transcription-link`.
-- Por item: abre viewer do Drive (popup ou mesma página), tenta clicar em “Baixar” com vários seletores e frames, espera ficheiro estável em `temp_downloads/`, move para `downloads/<secção>/`, gera `.md`.
+- Arranca Chrome (ou caminho definido em env), opcionalmente em modo headed (`--headed` / `HEADLESS=0`).
+- Reutiliza ou cria `session.json` (cookies + `localStorage`) via `infnetShared.mjs`.
+- **Aulas:** lista `.infnetci-recording-item` com `.transcription-link`; por item abre o viewer do Drive, configura pasta de download, clica em “Baixar”, move ficheiro estável de `temp_downloads/` e gera `.md`.
+- **Documentos:** BFS em pastas BuddyPress, filtra extensões (por defeito `pdf`, `pptx`, `xlsx`), regista conclusões no **manifest** quando aplicável.
+- **Orquestrador:** opções `--all`, `--lessons`, `--docs`, `--fail-fast` (ou `ORCHESTRATOR_FAIL_FAST`); `browser.close()` em `finally`.
 
 **Não faz**
 
 - Não fornece credenciais nem contorna MFA fora do que o browser já tiver em sessão.
-- Não garante compatibilidade perpétua com alterações de HTML no Infnet ou no Drive (dependência forte de seletores).
-- Não substitui políticas da instituição ou dos termos de serviço: o utilizador é responsável pelo uso conforme contratos e leis aplicáveis.
+- Não garante compatibilidade perpétua com alterações de HTML no Infnet, no Drive ou em BuddyPress.
+- Não substitui políticas da instituição ou termos de serviço: o utilizador é responsável pelo uso conforme contratos e leis aplicáveis.
 
 ---
 
@@ -68,50 +76,91 @@ O nome do repositório é um jogo de palavras com “strip” (extração) e “
 |------------|---------|
 | **Runtime** | Node.js com **ESM** (`"type": "module"` em `package.json`). |
 | **Automação** | `puppeteer` (Chrome/Chromium). |
-| **Config** | `dotenv` carrega `.env` na entrada de `stripper.js`. |
-| **Ficheiro principal** | `stripper.js` — ponto único de lógica. |
+| **CLI** | `commander` em `main.js` (flags do orquestrador; opções dos scrapers permanecem em `process.argv` graças a `.allowUnknownOption()`). |
+| **Config** | `dotenv` — `import 'dotenv/config'` em `main.js`. |
+| **Entrypoint principal** | [`main.js`](./main.js). |
+| **Lógica de scraping** | [`src/scrapers/lessonScraper.js`](./src/scrapers/lessonScraper.js), [`src/scrapers/documentScraper.js`](./src/scrapers/documentScraper.js). |
 
-**Chrome:** o código tenta `PUPPETEER_EXECUTABLE_PATH`, depois **deteção por SO** (`detectSystemChrome`: Windows, macOS, Linux), e caso contrário deixa o Puppeteer usar o binário que tiver instalado. Se o launch falhar com mensagem do tipo “Could not find Chrome”, o script imprime instruções (`printChromeHelp`).
+**Chrome:** `resolveExecutablePath` / `launchBrowser` em `src/utils/browser.mjs` tentam `PUPPETEER_EXECUTABLE_PATH`, depois **deteção por SO** (`detectSystemChrome` em `infnetShared.mjs`), e caso contrário o binário gerido pelo Puppeteer. Se o launch falhar com mensagem do tipo “Could not find Chrome”, imprime-se `printChromeHelp`.
 
 ---
 
 ## Visão do sistema
 
 ```mermaid
-graph LR
+graph TB
   subgraph Local["Máquina local"]
-    Node["Node.js — stripper.js"]
-    Puppeteer["Puppeteer / Chrome"]
+    Main["main.js"]
+    LS["src/scrapers/lessonScraper.js"]
+    DS["src/scrapers/documentScraper.js"]
+    U["src/utils/*.mjs"]
     Sess["session.json"]
     DL["downloads/"]
     TMP["temp_downloads/"]
   end
   subgraph Remote["Remoto"]
-    WP["infnet.online — WordPress"]
+    WP["infnet.online — WordPress / BuddyPress"]
     DRV["Google Drive viewer"]
   end
-  Node --> Puppeteer
-  Puppeteer --> WP
-  Puppeteer --> DRV
-  Node --> Sess
-  Puppeteer --> TMP
-  Node --> DL
+  Main --> LS
+  Main --> DS
+  LS --> U
+  DS --> U
+  Main --> Sess
+  LS --> TMP
+  LS --> DL
+  DS --> DL
+  LS --> WP
+  LS --> DRV
+  DS --> WP
 ```
 
 ---
 
-## Arquitetura e módulo `stripper.js`
+## Estrutura de pastas e entrypoints
 
-O ficheiro `stripper.js` concentra **parse de argumentos**, **I/O de sessão**, **login WordPress**, **extração da lista na página de aulas**, **orquestração por aula** (abrir Drive, download, mover, Markdown) e o **ponto de entrada** `run()` quando executado como script principal.
+| Path | Papel |
+|------|--------|
+| `main.js` | Orquestrador CLI: lança browser, chama `runLessonScraper` e/ou `runDocumentScraper` na mesma `page` quando em modo combinado. |
+| `src/scrapers/lessonScraper.js` | Transcrições / Drive + manifest `transcript`. Exporta `parseLessonArgs`, `runLessonScraper`, `runLessonScraperStandalone`, `toMarkdown`. |
+| `src/scrapers/documentScraper.js` | Documentos BuddyPress + manifest `document`. Exporta `parseDocumentArgs`, `runDocumentScraper`, `runDocumentScraperStandalone`. |
+| `src/utils/infnetShared.mjs` | Sessão, login, Chrome, `projectRoot`, `safeDirName` / `safeFileName`, `gotoUrl`, `ensureAuthenticated`. |
+| `src/utils/downloadManifest.mjs` | `manifest.json`, IDs estáveis, `isItemCompleted`, `markArtifactCompletedIfPresent`. |
+| `src/utils/browser.mjs` | `launchBrowser`, `buildLaunchOptions`, `resolveExecutablePath`. |
+| `src/utils/logging.mjs` | `logSectionBanner` — prefixo `[SEÇÃO]` no orquestrador. |
+
+---
+
+## Orquestrador `main.js`
+
+| Opção | Efeito |
+|-------|--------|
+| `--all` | Executa aulas e, em seguida, documentos na **mesma** instância do browser (mesmo contexto de cookies). |
+| `--lessons` | Apenas `runLessonScraper`. |
+| `--docs` | Apenas `runDocumentScraper`. |
+| `--fail-fast` | Se o módulo de **aulas** lançar exceção, **não** corre o módulo de documentos. |
+| *(outras flags)* | Permanecem em `argv` (ex.: `--limit=`, `--headed`, `--documents-url=`) para os parsers dos scrapers. |
+
+Variável **`ORCHESTRATOR_FAIL_FAST`** (`1` / `true` / `yes`) equivale a `--fail-fast`.
+
+Fluxo resumido: `launchBrowser` → `browser.newPage()` → secção aulas (se ativa) → secção documentos (se ativa e não abortada por fail-fast) → `browser.close()` no `finally`, com log `[ORQUESTRADOR] A fechar o browser…`.
+
+**Nota:** `node main.js` sem `--lessons`, `--docs` ou `--all` mostra a ajuda do Commander e termina com código de saída 1.
+
+---
+
+## Módulo de aulas — `lessonScraper.js`
+
+Concentra o fluxo histórico do antigo `stripper.js`: **parse de argumentos**, integração com **manifest**, **lista na página de aulas**, **orquestração por aula** (Drive, download, mover, Markdown). As funções de sessão (`ensureAuthenticated`, etc.) vivem em `infnetShared.mjs`.
 
 ### Constantes e configuração
 
 | Símbolo | Função |
 |---------|--------|
 | `DEFAULT_CLASSES_URL` | URL exemplo da página de reuniões; sobrescrita por `CLASSES_URL`. |
-| `BASE_ORIGIN` | `https://infnet.online` — usado em `applySession` antes de injetar cookies. |
+| `BASE_ORIGIN` | `https://infnet.online` — definido em `infnetShared.mjs`, usado em `applySession`. |
 
-### Argumentos CLI (`parseArgs`)
+### Argumentos CLI (`parseLessonArgs`)
 
 | Argumento | Efeito |
 |-----------|--------|
@@ -126,81 +175,99 @@ O ficheiro `stripper.js` concentra **parse de argumentos**, **I/O de sessão**, 
 | `humanizePathSegment` / `cleanGroupSlug` / `courseFromClassesUrl` | Derivar rótulo de curso a partir do path da URL. |
 | `resolveCourseTitle` | Ordem: `DISCIPLINE_NAME` / `COURSE_NAME` → texto da página (acordeão, `h1`, `document.title`) → URL → fallback `"Disciplina"`. |
 | `slugify` | Nome de ficheiro estável a partir do título da aula. |
-| `safeDirName` | Remove caracteres inválidos no **Windows** para nome de pasta. |
-
-### Sessão e autenticação
-
-| Função | Responsabilidade |
-|--------|------------------|
-| `loadSession` / `saveSession` | JSON com `cookies` e objeto `localStorage`. |
-| `applySession` | `goto` à origem, `setCookie`, repovoar `localStorage` via `page.evaluate`. |
-| `login` | Localiza campos com múltiplos seletores, preenche com delay, submete formulário. |
-| `ensureAuthenticated` | Fluxo: carregar sessão → ir às aulas → se `wp-login.php`, exige env e faz login → grava sessão. |
+| `safeDirName` | Em `infnetShared.mjs`; remove caracteres inválidos no **Windows** (`opts.maxLen` / `fallback` usados pelo scraper). |
 
 ### Lista e download
 
 | Função | Responsabilidade |
 |--------|------------------|
-| `gotoClasses` | Navega para `classesUrl` com timeout 120s e pequena pausa. |
+| `gotoClasses` | Delega `gotoUrl(page, classesUrl, 800)`. |
 | `setDownloadPath` | CDP `Page.setDownloadBehavior` para `temp_downloads/`. |
 | `listFileNames` / `waitNewStableFile` | Deteção de ficheiro novo estável (ignora `.crdownload`/`.tmp`, compara tamanhos). |
 | `openTranscriptPageByIndex` | Clica no link da aula; suporta **popup** (`waitForTarget`) ou navegação na mesma página se já for Drive. |
 | `clickDriveDownload` | Itera **frames** e tenta lista fixa de seletores `aria-label` / `data-tooltip` (PT/EN). |
 
-### Markdown
+### `runLessonScraper({ browser, page })`
 
-| Função | Responsabilidade |
-|--------|------------------|
-| `toMarkdown` | **Exportada** (`export async function toMarkdown`). Escreve `base.md` ao lado do ficheiro descarregado com front-matter: `title`, `source_url`, `course`, `transcript_file`, `downloaded_at`. |
+1. Garante pastas `downloads/` e `temp_downloads/` (relativas a `projectRoot`).
+2. `ensureAuthenticated(page, classesUrl, sessionPath, user, pass, { gotoSettleMs: 800 })`.
+3. `page.evaluate` para recolher `{ title, href, accordionTitle }` por `.infnetci-recording-item`.
+4. Loop até `limit`: verificação de manifest; opcionalmente dry-run; senão download + rename + `toMarkdown`; fecha popup se diferente da página principal; `gotoClasses`.
+5. **Não** chama `browser.close()` — responsabilidade do chamador (`main.js` ou `runLessonScraperStandalone`).
 
-### `run()` — sequência resumida
+`runLessonScraperStandalone()` lança browser próprio, cria página, corre o scraper e fecha no `finally`.
 
-1. Garante pastas `downloads/` e `temp_downloads/`.
-2. Resolve `executablePath`, lança browser, cria página.
-3. `ensureAuthenticated`.
-4. `page.evaluate` para recolher `{ title, href, accordionTitle }` por `.infnetci-recording-item`.
-5. Loop até `limit`: opcionalmente dry-run; senão download + rename + `toMarkdown`; fecha popup se diferente da página principal; volta à lista com `gotoClasses`.
-6. `browser.close()`.
+---
+
+## Módulo de documentos — `documentScraper.js`
+
+| Aspeto | Detalhe |
+|--------|---------|
+| **Navegação** | `page.goto` em cada URL de pasta; scroll suave para conteúdo lazy; `page.evaluate(extractListingScript)` devolve pastas + ficheiros. |
+| **Download** | `fetch` no Node com header `Cookie` montado a partir de `page.cookies()`, streaming para disco, limite `DOCUMENTS_MAX_BYTES`, timeout `DOCUMENTS_FETCH_TIMEOUT_MS`. |
+| **Idempotência** | `stableDocumentItemId`, `resolveManifestRootAndPath` (manifest partilhado sob `downloads/manifest.json` quando a saída está dentro de `downloads/`). |
+
+### Argumentos CLI (`parseDocumentArgs`)
+
+| Argumento | Efeito |
+|-----------|--------|
+| `--documents-url=` | URL raiz da área de documentos. |
+| `--output=` | Diretório raiz da árvore descarregada (absoluto após `path.resolve`). |
+| `--dry-run` / `--no-download` | Só listagem no log. |
+| `--ignore-manifest` | Ignora manifest (ou env `DOCUMENTS_IGNORE_MANIFEST`). |
+| `--max-depth=` | Profundidade máxima de pastas. |
+| `--extensions=` | Lista separada por vírgula (extensões sem ponto). |
+| `--headed` / `--show` | Browser visível no modo standalone. |
+
+`runDocumentScraper({ browser, page })` assume `page` já criada; aplica `setDefaultNavigationTimeout(120000)`, autentica em `DOCUMENTS_URL`, percorre a fila BFS. **Não** fecha o browser quando chamado pelo orquestrador.
+
+---
+
+## Utilitários `src/utils/`
+
+| Módulo | Conteúdo principal |
+|--------|---------------------|
+| `infnetShared.mjs` | `projectRoot` (raiz do repo), `ensureDir`, `fileExists`, `detectSystemChrome`, `printChromeHelp`, `loadSession` / `saveSession` / `applySession`, `login`, `gotoUrl`, `ensureAuthenticated`, `safeDirName`, `safeFileName`. |
+| `downloadManifest.mjs` | Versão do schema, `stableTranscriptItemId`, `stableDocumentItemId`, `resolveManifestRootAndPath`, `isItemCompleted`, `markArtifactCompletedIfPresent`, fila de escrita atómica por path de manifest. |
+| `browser.mjs` | Consolidação do `puppeteer.launch` e mensagens de UI headed. |
+| `logging.mjs` | Banners `[SEÇÃO]` entre blocos do orquestrador. |
+
+---
+
+## Manifest e idempotência
+
+O ficheiro **`downloads/manifest.json`** (ou sob a raiz de saída dos documentos quando esta está fora de `downloads/`) regista entradas por **ID estável** (`transcript:gdrv:…`, `document:bp:…`, ou hash de URL). Antes de voltar a descarregar, `isItemCompleted` pode exigir que os ficheiros no disco ainda existam (`verifyArtifact` + `manifestRoot`), para evitar omitir download após apagamento manual.
 
 ---
 
 ## Fluxos de dados e estado
 
+### Orquestrador com aulas e documentos (`--all`)
+
 ```mermaid
 sequenceDiagram
   participant U as Utilizador
-  participant S as stripper.js
+  participant M as main.js
   participant B as Browser
+  participant L as lessonScraper
+  participant D as documentScraper
   participant I as infnet.online
-  participant G as Google Drive
 
-  U->>S: node stripper.js (ou npm start)
-  S->>B: puppeteer.launch
-  S->>B: goto CLASSES_URL (com sessão se existir)
-  alt URL contém wp-login.php
-    S->>B: login(user, pass)
-    B->>I: POST credenciais
-    S->>S: saveSession(session.json)
-  end
-  B->>I: página de gravações
-  S->>B: evaluate lista .infnetci-recording-item
-  loop Por cada aula até limit
-    alt --no-download
-      S->>U: log href (dry-run)
-    else download
-      S->>B: click .transcription-link
-      B->>G: viewer / preview
-      S->>B: CDP downloadPath → temp_downloads
-      S->>B: clickDriveDownload (frames + seletores)
-      G-->>S: ficheiro estável em temp_downloads
-      S->>S: rename → downloads/secção/slug.ext
-      S->>S: toMarkdown → slug.md
-      S->>B: fechar popup se aplicável
-      S->>B: gotoClasses (lista)
-    end
-  end
-  S->>B: close
+  U->>M: node main.js --all
+  M->>B: launchBrowser
+  M->>B: newPage
+  M->>L: runLessonScraper browser, page
+  L->>I: ensureAuthenticated CLASSES_URL
+  L->>B: evaluate lista + downloads Drive
+  M->>D: runDocumentScraper browser, page
+  D->>I: ensureAuthenticated DOCUMENTS_URL
+  D->>I: BFS listagens + fetch com cookies
+  M->>B: close finally
 ```
+
+### Apenas transcrições (`--lessons`)
+
+Equivale ao ramo `L` até `browser.close()` (no `main.js` ou no standalone).
 
 ---
 
@@ -212,11 +279,13 @@ stateDiagram-v2
   SemFicheiro --> AplicarVazio: loadSession falha
   AplicarVazio --> Autenticar: wp-login após goto
   Autenticar --> SessaoGravada: login OK
-  SessaoGravada --> ListaAulas: gotoClasses
+  SessaoGravada --> Destino: goto URL alvo aulas ou documentos
   [*] --> SessaoExistente: session.json válido
-  SessaoExistente --> ListaAulas: applySession + goto sem login
-  ListaAulas --> [*]: run termina
+  SessaoExistente --> Destino: applySession + goto sem login
+  Destino --> [*]: scraper termina ou orquestrador avança
 ```
+
+O mesmo `session.json` na raiz do repo serve **aulas** e **documentos** no mesmo browser.
 
 ---
 
@@ -225,11 +294,23 @@ stateDiagram-v2
 ### Scripts npm
 
 | Comando | Equivalente |
-|---------|----------------|
-| `npm start` | `node stripper.js` |
-| `npm run stripper` | `node stripper.js` |
+|---------|-------------|
+| `npm start` | `node main.js` (exige `--lessons`, `--docs` ou `--all`) |
+| `npm run main` | `node main.js` |
+| `npm run all` | `node main.js --all` |
+| `npm run lessons` | `node main.js --lessons` |
+| `npm run docs` | `node main.js --docs` |
+| `npm run stripper` | `node main.js --lessons` |
+| `npm run documents` | `node main.js --docs` |
 
-### Variáveis de ambiente
+Modo **standalone** (browser próprio), por exemplo para depuração:
+
+```javascript
+import { runLessonScraperStandalone } from './src/scrapers/lessonScraper.js';
+await runLessonScraperStandalone();
+```
+
+### Variáveis de ambiente — aulas / geral
 
 | Variável | Obrigatório | Descrição |
 |----------|-------------|-----------|
@@ -239,6 +320,18 @@ stateDiagram-v2
 | `DISCIPLINE_NAME` ou `COURSE_NAME` | Não | Nome da disciplina nos metadados; senão inferido. |
 | `PUPPETEER_EXECUTABLE_PATH` | Condicional | Caminho absoluto para o Chrome se a resolução automática falhar. |
 | `HEADLESS` | Não | `0` força browser visível (junto com `--headed`). |
+| `ORCHESTRATOR_FAIL_FAST` | Não | `1` / `true` / `yes` — mesmo efeito que `--fail-fast` no `main.js`. |
+
+### Variáveis de ambiente — documentos
+
+| Variável | Descrição |
+|----------|-----------|
+| `DOCUMENTS_URL` | URL raiz da área de documentos. |
+| `DOCUMENTS_OUTPUT_DIR` | Pasta de saída (default `downloads/documents` sob `projectRoot`). |
+| `DOCUMENTS_MAX_DEPTH` | Profundidade máxima de pastas (default 32). |
+| `DOCUMENTS_MAX_BYTES` | Limite por ficheiro (default 500 MiB). |
+| `DOCUMENTS_FETCH_TIMEOUT_MS` | Timeout do `fetch` (default 300000). |
+| `DOCUMENTS_IGNORE_MANIFEST` | `1` / `true` / `yes` — ignora manifest. |
 
 ### Exemplos copiáveis
 
@@ -246,12 +339,12 @@ stateDiagram-v2
 copy .env.example .env
 # editar .env, depois:
 npm install
-node stripper.js --limit=1
+npm run lessons -- --limit=1
 ```
 
-```bash
+```powershell
 # Windows PowerShell — sessão visível
-$env:HEADLESS="0"; node stripper.js --limit=2
+$env:HEADLESS="0"; npm run lessons -- --limit=2
 ```
 
 ---
@@ -261,6 +354,8 @@ $env:HEADLESS="0"; node stripper.js --limit=2
 | Caminho | Conteúdo | Versionamento |
 |---------|----------|----------------|
 | `downloads/<Secção>/` | Ficheiros de transcrição + `.md` por item | Ignorado pelo Git (`.gitignore`). |
+| `downloads/documents/` | Árvore de documentos BuddyPress (por defeito) | Ignorado. |
+| `downloads/manifest.json` | Idempotência (transcrições + documentos quando a saída está sob `downloads/`) | Tipicamente ignorado / local. |
 | `temp_downloads/` | Buffer de download do Chrome | Ignorado. |
 | `session.json` | Cookies + `localStorage` | Ignorado — **não commitar**. |
 | `.env` | Credenciais locais | Ignorado. |
@@ -282,7 +377,7 @@ $env:HEADLESS="0"; node stripper.js --limit=2
 Outro módulo ESM pode importar:
 
 ```javascript
-import { toMarkdown } from './stripper.js';
+import { toMarkdown } from './src/scrapers/lessonScraper.js';
 
 await toMarkdown('/caminho/para/ficheiro.vtt', {
   title: 'Aula 1',
@@ -292,7 +387,7 @@ await toMarkdown('/caminho/para/ficheiro.vtt', {
 });
 ```
 
-Isto escreve `ficheiro.md` ao lado de `ficheiro.vtt`. A execução direta `node stripper.js` não usa esta API, mas facilita testes ou pipelines que já tenham o binário.
+Isto escreve `ficheiro.md` ao lado de `ficheiro.vtt`. A função não depende do Puppeteer.
 
 ---
 
@@ -307,10 +402,11 @@ Isto escreve `ficheiro.md` ao lado de `ficheiro.vtt`. A execução direta `node 
 
 ## Limitações e manutenção
 
-1. **Seletores frágeis:** `.infnetci-recording-item`, `.transcription-link`, botões do Drive e login WordPress podem mudar; o código mitiga com listas de seletores, mas não há garantia eterna.
+1. **Seletores frágeis:** `.infnetci-recording-item`, `.transcription-link`, botões do Drive, listagens BuddyPress e login WordPress podem mudar; o código mitiga com listas de seletores, mas não há garantia eterna.
 2. **`VALIDACAO_SELETORES.md`:** referenciado no README como notas de validação; no `.gitignore` do projeto pode estar excluído — se existir localmente, serve de checklist de regressão visual.
-3. **Um ficheiro monolítico:** alterações de comportamento concentram-se em `stripper.js`; convém diff pequeno e testes manuais com `--limit=1` e `--headed`.
+3. **Vários módulos:** alterações podem exigir tocar em `lessonScraper.js`, `documentScraper.js` ou `src/utils/`; convém diff focado e testes manuais com `--limit=1`, `--headed` ou `--dry-run`.
 4. **Erros por aula:** falhas num item registam-se no stderr e o loop tenta continuar com as seguintes, voltando à lista com `gotoClasses`.
+5. **Erros por documento:** o BFS regista erros por ficheiro e continua; contagens aparecem no resumo `[FIM]`.
 
 ---
 
@@ -325,7 +421,7 @@ Verificar instalação do Google Chrome ou definir `PUPPETEER_EXECUTABLE_PATH`. 
 <details>
 <summary>Lista vazia — “Nenhum .infnetci-recording-item encontrado”</summary>
 
-O script regista um diagnóstico mínimo (`count` de itens e `snippet` do texto da página). Causas típicas: sessão sem permissão para a turma, URL errada, ou HTML alterado. Correr com `--headed` para inspecionar; atualizar seletores em `stripper.js` se o layout mudou.
+O script regista um diagnóstico mínimo (`count` de itens e `snippet` do texto da página). Causas típicas: sessão sem permissão para a turma, URL errada, ou HTML alterado. Correr com `--headed` para inspecionar; atualizar seletores em `src/scrapers/lessonScraper.js` se o layout mudou.
 </details>
 
 <details>
@@ -340,16 +436,22 @@ UI do Drive varia (iframe, idioma, consentimentos). O código percorre frames e 
 Verificar MFA ou captchas (não tratados pelo script). Limpar `session.json` e tentar de novo com `--headed` para ver o estado da página.
 </details>
 
+<details>
+<summary>Documentos: resposta HTML em vez de PDF</summary>
+
+O downloader deteta cabeçalho tipo HTML e apaga o ficheiro parcial — típico de sessão expirada ou URL sem permissão. Verificar `DOCUMENTS_URL` e voltar a autenticar.
+</details>
+
 ---
 
 ## Relação entre README, este documento e histórico de agente
 
 | Artefacto | Papel |
 |-----------|--------|
-| [README.md](./README.md) | Onboarding, quick start, mesma visão em Mermaid, troubleshooting resumido. |
-| **documentation.md** (este ficheiro) | Referência técnica única: funções, estados, segurança, limites, import de `toMarkdown`. |
+| [README.md](./README.md) | Onboarding, quick start, troubleshooting resumido. |
+| **documentation.md** (este ficheiro) | Referência técnica: pastas `src/`, orquestrador, scrapers, manifest, `toMarkdown`. |
 | `.agent_history.md` | Se existir na raiz, regista decisões de fluxos de agente; consolidar alterações relevantes aqui quando o histórico estiver disponível. |
 
 ---
 
-*Documento gerado para refletir o estado do código e do README na raiz do repositório. Em caso de divergência, o código em `stripper.js` prevalece.*
+*Em caso de divergência entre este texto e o comportamento observado, o código em `main.js` e em `src/` prevalece.*

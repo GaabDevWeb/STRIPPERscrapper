@@ -4,13 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node stripper.js",
-    "stripper": "node stripper.js",
-    "documents": "node documentsScraper.js"
+    "start": "node main.js",
+    "main": "node main.js",
+    "all": "node main.js --all",
+    "lessons": "node main.js --lessons",
+    "docs": "node main.js --docs",
+    "stripper": "node main.js --lessons",
+    "documents": "node main.js --docs"
   },
   "dependencies": {
+    "commander": "^12.1.0",
     "dotenv": "^16.4.5",
-    "package.json": "^2.0.1",
     "puppeteer": "^24.1.0"
   }
 }

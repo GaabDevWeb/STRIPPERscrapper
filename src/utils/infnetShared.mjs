@@ -1,6 +1,6 @@
 /**
  * Utilitários compartilhados Infnet (sessão, Chrome, paths seguros).
- * Usado por `stripper.js`, `documentsScraper.js` e outros scripts ESM.
+ * Usado pelos scrapers e pelo orquestrador.
  */
 import fs from 'fs/promises';
 import path from 'path';
@@ -9,7 +9,8 @@ import { fileURLToPath } from 'url';
 export const BASE_ORIGIN = 'https://infnet.online';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const projectRoot = path.join(__dirname, '..');
+/** Raiz do repositório (pai de `src/`). */
+export const projectRoot = path.join(__dirname, '..', '..');
 
 /**
  * @param {string} name

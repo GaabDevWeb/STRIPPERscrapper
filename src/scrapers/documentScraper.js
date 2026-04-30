@@ -4,44 +4,39 @@
  * — Navegação: apenas page.goto (sessão/cookies no Puppeteer).
  * — Download: fetch no Node com cookies da página (streaming + limite de tamanho).
  */
-import puppeteer from 'puppeteer';
-import dotenv from 'dotenv';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
 import { finished } from 'stream/promises';
 import { Readable } from 'stream';
-import { fileURLToPath, pathToFileURL } from 'url';
 import {
   projectRoot,
   ensureDir,
   fileExists,
-  detectSystemChrome,
   printChromeHelp,
   ensureAuthenticated,
   safeDirName,
   safeFileName,
-} from './lib/infnetShared.mjs';
+} from '../utils/infnetShared.mjs';
 import {
   stableDocumentItemId,
   resolveManifestRootAndPath,
   isItemCompleted,
   markArtifactCompletedIfPresent,
-} from './lib/downloadManifest.mjs';
-
-dotenv.config();
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+} from '../utils/downloadManifest.mjs';
+import { launchBrowser } from '../utils/browser.mjs';
 
 const DEFAULT_DOCUMENTS_URL =
   'https://infnet.online/grupos/fundamentos-do-processamento-de-dados-26e1-26e2-93422564/documents/';
 
 const DEFAULT_EXTENSIONS = new Set(['pdf', 'pptx', 'xlsx']);
 
-function parseArgs() {
-  const args = process.argv.slice(2);
+/** @param {string[]} [args] */
+export function parseDocumentArgs(args = process.argv.slice(2)) {
   let documentsUrl = process.env.DOCUMENTS_URL?.trim() || DEFAULT_DOCUMENTS_URL;
-  let outputDir = process.env.DOCUMENTS_OUTPUT_DIR?.trim() || path.join(__dirname, 'downloads', 'documents');
+  let outputDir =
+    process.env.DOCUMENTS_OUTPUT_DIR?.trim() ||
+    path.join(projectRoot, 'downloads', 'documents');
   let headed = false;
   let dryRun = false;
   const envIgn =
@@ -92,7 +87,6 @@ function normalizeListUrl(u) {
   }
 }
 
-/** Extrai pastas (navegação HTTP) e ficheiros (URL de download) do HTML atual. */
 function extractListingScript() {
   const FOLDER_PATH = '/documents/folders/';
   const folders = [];
@@ -178,9 +172,6 @@ async function buildCookieHeader(page) {
   return cookies.map((c) => `${c.name}=${c.value}`).join('; ');
 }
 
-/**
- * Descarrega binário com cookies da sessão Puppeteer (sem abrir dropdown).
- */
 async function downloadBinaryWithSession(page, fileUrl, destPath, opts) {
   const { maxBytes, referer } = opts;
   const cookie = await buildCookieHeader(page);
@@ -246,12 +237,19 @@ async function downloadBinaryWithSession(page, fileUrl, destPath, opts) {
   }
 }
 
-async function run() {
-  const { documentsUrl, outputDir, headed, dryRun, ignoreManifest, maxDepth, extensions } =
-    parseArgs();
+/**
+ * @param {object} ctx
+ * @param {import('puppeteer').Browser} ctx.browser
+ * @param {import('puppeteer').Page} ctx.page
+ */
+export async function runDocumentScraper(ctx) {
+  const { page } = ctx;
+  const { documentsUrl, outputDir, dryRun, ignoreManifest, maxDepth, extensions } =
+    parseDocumentArgs();
+
   const user = process.env.FACULDADE_USER || '';
   const pass = process.env.FACULDADE_PASS || '';
-  const sessionPath = path.join(__dirname, 'session.json');
+  const sessionPath = path.join(projectRoot, 'session.json');
   const maxBytes =
     Number(process.env.DOCUMENTS_MAX_BYTES || 500 * 1024 * 1024) || 500 * 1024 * 1024;
   const fetchTimeoutMs = Number(process.env.DOCUMENTS_FETCH_TIMEOUT_MS || 300000) || 300000;
@@ -260,43 +258,9 @@ async function run() {
     console.warn('[AVISO] URL não contém /documents — confirme DOCUMENTS_URL / --documents-url=');
   }
 
-  let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
-  if (executablePath && !(await fileExists(executablePath))) {
-    console.error('[ERRO] PUPPETEER_EXECUTABLE_PATH inválido:', executablePath);
-    printChromeHelp();
-    process.exit(1);
-  }
-  if (!executablePath) executablePath = await detectSystemChrome();
-
-  const showBrowser = headed || process.env.HEADLESS === '0';
-  const launchOpts = {
-    headless: !showBrowser,
-    defaultViewport: showBrowser ? null : { width: 1280, height: 900 },
-    ...(executablePath ? { executablePath } : {}),
-  };
-
-  let browser;
-  try {
-    browser = await puppeteer.launch(launchOpts);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes('Could not find Chrome')) {
-      printChromeHelp();
-      process.exit(1);
-    }
-    throw e;
-  }
-
-  const page = await browser.newPage();
   page.setDefaultNavigationTimeout(120000);
 
-  try {
-    await ensureAuthenticated(page, documentsUrl, sessionPath, user, pass);
-  } catch (e) {
-    console.error('[ERRO]', e instanceof Error ? e.message : e);
-    await browser.close();
-    process.exit(1);
-  }
+  await ensureAuthenticated(page, documentsUrl, sessionPath, user, pass);
 
   const visited = new Set();
   const queue = [{ listUrl: normalizeListUrl(documentsUrl), depth: 0, relParts: [] }];
@@ -305,7 +269,7 @@ async function run() {
   let skippedManifest = 0;
   let errors = 0;
 
-  const downloadsRootDefault = path.join(__dirname, 'downloads');
+  const downloadsRootDefault = path.join(projectRoot, 'downloads');
   const { manifestPath, manifestRoot } = resolveManifestRootAndPath(
     downloadsRootDefault,
     outputDir
@@ -405,19 +369,34 @@ async function run() {
     }
   }
 
-  await browser.close();
   console.log(
     `[FIM] descarregados: ${downloaded} | ignorados (extensão): ${skipped} | já no manifest: ${skippedManifest} | erros: ${errors} | pastas visitadas: ${visited.size}`
   );
 }
 
-const isMain =
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
-
-if (isMain) {
-  run().catch((e) => {
-    console.error('[FATAL]', e);
+export async function runDocumentScraperStandalone() {
+  const { headed } = parseDocumentArgs();
+  let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
+  if (executablePath && !(await fileExists(executablePath))) {
+    console.error('[ERRO] PUPPETEER_EXECUTABLE_PATH inválido:', executablePath);
+    printChromeHelp();
     process.exit(1);
-  });
+  }
+
+  let browser;
+  try {
+    browser = await launchBrowser({ headed });
+  } catch {
+    process.exit(1);
+  }
+
+  const page = await browser.newPage();
+  try {
+    await runDocumentScraper({ browser, page });
+  } catch (e) {
+    console.error('[FATAL]', e);
+    process.exitCode = 1;
+  } finally {
+    await browser.close().catch(() => {});
+  }
 }
