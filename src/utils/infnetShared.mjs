@@ -94,6 +94,48 @@ export async function loadSession(filePath) {
   }
 }
 
+/** @param {string} lockPath */
+async function acquireSessionWriteLock(lockPath, opts = {}) {
+  const staleMs = opts.staleMs ?? 180_000;
+  const timeoutMs = opts.timeoutMs ?? 300_000;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const fh = await fs.open(lockPath, 'wx');
+      await fh.writeFile(String(process.pid), 'utf8');
+      return fh;
+    } catch (e) {
+      const code = /** @type {NodeJS.ErrnoException} */ (e).code;
+      if (code === 'EEXIST') {
+        let st = null;
+        try {
+          st = await fs.stat(lockPath);
+        } catch {
+          /* lock removido */
+        }
+        if (st && Date.now() - st.mtimeMs > staleMs) {
+          await fs.unlink(lockPath).catch(() => {});
+          continue;
+        }
+        await new Promise((r) => setTimeout(r, 40 + Math.random() * 120));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error(`Timeout de lock de sessão: ${lockPath}`);
+}
+
+/** @param {import('fs/promises').FileHandle} fh */
+async function releaseSessionWriteLock(fh, lockPath) {
+  await fh.close().catch(() => {});
+  await fs.unlink(lockPath).catch(() => {});
+}
+
+/**
+ * Escreve `session.json` de forma atómica (rename) sob lock de ficheiro,
+ * para vários workers/processos não corromperem o JSON.
+ */
 export async function saveSession(page, filePath) {
   const cookies = await page.cookies();
   const localStorageData = await page.evaluate(() => {
@@ -104,11 +146,28 @@ export async function saveSession(page, filePath) {
     }
     return o;
   });
-  await fs.writeFile(
-    filePath,
-    JSON.stringify({ cookies, localStorage: localStorageData }, null, 2),
-    'utf8'
-  );
+  const payload = JSON.stringify({ cookies, localStorage: localStorageData }, null, 2);
+  const dir = path.dirname(filePath);
+  await fs.mkdir(dir, { recursive: true });
+  const lockPath = `${filePath}.write.lock`;
+  const fh = await acquireSessionWriteLock(lockPath);
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.writeFile(tmp, payload, 'utf8');
+    try {
+      await fs.rename(tmp, filePath);
+    } catch (e) {
+      const code = /** @type {NodeJS.ErrnoException} */ (e).code;
+      if (code === 'EPERM' || code === 'EEXIST' || code === 'EBUSY') {
+        await fs.copyFile(tmp, filePath);
+        await fs.unlink(tmp).catch(() => {});
+      } else {
+        throw e;
+      }
+    }
+  } finally {
+    await releaseSessionWriteLock(fh, lockPath);
+  }
 }
 
 export async function applySession(page, session) {

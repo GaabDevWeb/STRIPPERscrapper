@@ -11,6 +11,7 @@
 - [Visão do sistema](#visão-do-sistema)
 - [Estrutura de pastas e entrypoints](#estrutura-de-pastas-e-entrypoints)
 - [Orquestrador `main.js`](#orquestrador-mainjs)
+- [Modo cluster / multi-worker](#modo-cluster--multi-worker)
 - [Módulo de aulas — `lessonScraper.js`](#módulo-de-aulas--lessonscraperjs)
 - [Módulo de documentos — `documentScraper.js`](#módulo-de-documentos--documentscraperjs)
 - [Utilitários `src/utils/`](#utilitários-srcutils)
@@ -128,6 +129,8 @@ graph TB
 | `src/utils/downloadManifest.mjs` | `manifest.json`, IDs estáveis, `isItemCompleted`, `markArtifactCompletedIfPresent`. |
 | `src/utils/browser.mjs` | `launchBrowser`, `buildLaunchOptions`, `resolveExecutablePath`. |
 | `src/utils/logging.mjs` | `logSectionBanner` — prefixo `[SEÇÃO]` no orquestrador. |
+| `src/utils/shard.mjs` | Sharding determinístico: `partitionTasksForWorker(tasks, workerIndex, workerCount)` para distribuir trabalho entre workers. |
+| `src/utils/workerLog.mjs` | Logs por worker: prefixos `[WORKER-n][AULAS]` / `[WORKER-n][DOCS]`, cores (`chalk`) e helpers para consolidar saída no pai. |
 
 ---
 
@@ -138,6 +141,8 @@ graph TB
 | `--all` | Executa aulas e, em seguida, documentos na **mesma** instância do browser (mesmo contexto de cookies). |
 | `--lessons` | Apenas `runLessonScraper`. |
 | `--docs` | Apenas `runDocumentScraper`. |
+| `--workers <n>` | Ativa concorrência por **multi-worker** (ver secção seguinte). Default: `2`. |
+| `--sequential` | Força o comportamento antigo: um browser e execução em sequência (sem sharding). |
 | `--fail-fast` | Se o módulo de **aulas** lançar exceção, **não** corre o módulo de documentos. |
 | *(outras flags)* | Permanecem em `argv` (ex.: `--limit=`, `--headed`, `--documents-url=`) para os parsers dos scrapers. |
 
@@ -146,6 +151,95 @@ Variável **`ORCHESTRATOR_FAIL_FAST`** (`1` / `true` / `yes`) equivale a `--fail
 Fluxo resumido: `launchBrowser` → `browser.newPage()` → secção aulas (se ativa) → secção documentos (se ativa e não abortada por fail-fast) → `browser.close()` no `finally`, com log `[ORQUESTRADOR] A fechar o browser…`.
 
 **Nota:** `node main.js` sem `--lessons`, `--docs` ou `--all` mostra a ajuda do Commander e termina com código de saída 1.
+
+---
+
+## Modo cluster / multi-worker
+
+Esta secção descreve o modo de concorrência introduzido no `main.js`, em que a execução passa a ter **um processo pai** que faz o *crawl* (mapeamento de tarefas) e **N workers** que fazem o *download* em paralelo.
+
+### Quando o cluster ativa vs quando fica sequencial
+
+- **Ativa (cluster / multi-worker)** quando:
+  - `--workers <n>` é fornecido com \(n > 1\), **e**
+  - `--sequential` **não** foi usado.
+
+- **Fica sequencial** quando:
+  - `--sequential` é usado (independente do valor de `--workers`), ou
+  - `--workers 1` é usado (efeito equivalente a um único worker), ou
+  - o utilizador escolhe um fluxo compatível com o comportamento antigo (um browser e etapas em série).
+
+### Visão de alto nível (fases)
+
+1. **Fase de mapeamento (crawl)** — o pai abre **um browser** e descobre a lista de tarefas:
+   - Aulas: `discoverLessonTasks`
+   - Documentos: `discoverDocumentTasks`
+
+2. **Fase de distribuição (sharding)** — o pai divide as tarefas em N partições determinísticas com `partitionTasksForWorker(tasks, workerIndex, workerCount)`.
+
+3. **Fase de download** — o pai lança `Promise.all` e cada worker:
+   - abre o seu **próprio browser** (por defeito **headless** para reduzir RAM),
+   - executa `runLessonScraper` e/ou `runDocumentScraper` com `{ tasks }` (sem refazer crawl),
+   - escreve logs com prefixos por worker e devolve status para o resumo final.
+
+### Compatibilidade de flags e modo headless/headed
+
+- **Compatíveis / inalteradas**: `--all`, `--lessons`, `--docs` continuam a selecionar módulos.
+- **Headless por defeito no cluster**: workers executam em headless salvo `--headed`/`--show`. (Nota: `HEADLESS=0` continua útil para o browser de mapeamento; no cluster, os workers ignoram `HEADLESS=0` para economizar RAM.)
+- **`--sequential`**: força um browser e execução em sequência (útil para depuração ou ambientes com pouca RAM).
+
+### Exemplos de comandos (copiáveis)
+
+```bash
+# Aulas + documentos, concorrência com 4 workers
+node main.js --all --workers 4
+
+# Apenas aulas, concorrência com 3 workers
+node main.js --lessons --workers 3
+
+# Apenas documentos, concorrência com 2 workers
+node main.js --docs --workers 2
+
+# Forçar execução antiga (sequencial) mesmo que --workers exista
+node main.js --all --sequential
+
+# Ver browsers (headed) — útil para depuração
+node main.js --all --workers 2 --headed
+```
+
+### Idempotência e filtragem antes do sharding
+
+Para evitar desperdício de recursos em modo concorrente, o fluxo é:
+
+- **Antes do sharding**, o pai filtra tarefas usando o **manifest** (ver `downloads/manifest.json`) e remove as já concluídas (ou cujo artefacto ainda existe, quando aplicável).  
+- Só as tarefas “pendentes” são distribuídas entre workers via `partitionTasksForWorker`.
+
+Isto mantém o processo **idempotente**: reexecutar com os mesmos inputs não rebaixa o estado nem redescarga itens já finalizados, exceto quando o utilizador apagar artefactos no disco (caso em que a verificação do artefacto pode voltar a marcar como pendente).
+
+### Diretórios temporários por worker (evitar colisões)
+
+No módulo de aulas, cada worker usa um subdiretório próprio:
+
+- `temp_downloads/worker-<id>`
+
+Isto evita colisões de ficheiros quando múltiplos Chrome estão a descarregar em paralelo, e simplifica a limpeza/diagnóstico.
+
+### Logging e resumo final
+
+- **Logs por worker**: prefixos e cores via `chalk`, por exemplo:
+  - `[WORKER-1][AULAS] ...`
+  - `[WORKER-2][DOCS] ...`
+- **Resumo final do pai**: contabiliza quantos workers terminaram **OK** vs **falha**, para que seja possível identificar rapidamente partições problemáticas.
+
+### Limites práticos e recomendações
+
+O modo multi-worker aumenta throughput, mas os limites passam a ser:
+
+- **RAM**: cada browser+contexto consome memória; em máquinas modestas, \(n\) alto degrada ou falha.
+- **CPU**: renderização + execução de JS no portal/Drive escala com o número de browsers.
+- **Rede**: downloads em paralelo competem por largura de banda; pode haver throttling.
+
+Recomendação prática: começar com **2–4 workers** e só aumentar se a máquina aguentar (e se o gargalo for rede/IO, não UI/CPU).
 
 ---
 
@@ -187,15 +281,17 @@ Concentra o fluxo histórico do antigo `stripper.js`: **parse de argumentos**, i
 | `openTranscriptPageByIndex` | Clica no link da aula; suporta **popup** (`waitForTarget`) ou navegação na mesma página se já for Drive. |
 | `clickDriveDownload` | Itera **frames** e tenta lista fixa de seletores `aria-label` / `data-tooltip` (PT/EN). |
 
-### `runLessonScraper({ browser, page })`
+### `runLessonScraper({ browser, page }, opts?)`
 
 1. Garante pastas `downloads/` e `temp_downloads/` (relativas a `projectRoot`).
 2. `ensureAuthenticated(page, classesUrl, sessionPath, user, pass, { gotoSettleMs: 800 })`.
-3. `page.evaluate` para recolher `{ title, href, accordionTitle }` por `.infnetci-recording-item`.
-4. Loop até `limit`: verificação de manifest; opcionalmente dry-run; senão download + rename + `toMarkdown`; fecha popup se diferente da página principal; `gotoClasses`.
+3. Se `opts.tasks` for fornecido (modo cluster), **não refaz** o crawl e usa a lista já mapeada (com `domIndex`); caso contrário, faz `page.evaluate` para recolher `{ title, href, accordionTitle }` por `.infnetci-recording-item`.
+4. Loop (até `--limit`): verificação de manifest; opcionalmente dry-run; senão download + rename + `toMarkdown`; fecha popup se diferente da página principal; `gotoClasses`.
 5. **Não** chama `browser.close()` — responsabilidade do chamador (`main.js` ou `runLessonScraperStandalone`).
 
-`runLessonScraperStandalone()` lança browser próprio, cria página, corre o scraper e fecha no `finally`.
+Em modo cluster, recomenda-se que cada worker use um diretório temporário próprio via `opts.tempDownloadsDir` (por exemplo `temp_downloads/worker-<id>`), evitando colisões ao aguardar ficheiros estáveis.
+
+`runLessonScraperStandalone(opts?)` lança browser próprio, cria página, corre o scraper e fecha no `finally` (pode receber `tasks` do modo cluster).
 
 ---
 
@@ -219,7 +315,14 @@ Concentra o fluxo histórico do antigo `stripper.js`: **parse de argumentos**, i
 | `--extensions=` | Lista separada por vírgula (extensões sem ponto). |
 | `--headed` / `--show` | Browser visível no modo standalone. |
 
-`runDocumentScraper({ browser, page })` assume `page` já criada; aplica `setDefaultNavigationTimeout(120000)`, autentica em `DOCUMENTS_URL`, percorre a fila BFS. **Não** fecha o browser quando chamado pelo orquestrador.
+`discoverDocumentTasks({ browser, page })` autentica e percorre pastas para gerar a lista plana de tarefas (BFS + extração de links), sem download.
+
+`runDocumentScraper({ browser, page }, opts?)` assume `page` já criada; aplica `setDefaultNavigationTimeout(120000)` e autentica em `DOCUMENTS_URL`.
+
+- Sem `opts.tasks`: percorre a fila BFS e baixa ficheiros inline (modo standalone/sequencial).
+- Com `opts.tasks`: baixa apenas as tarefas fornecidas (modo cluster), sem refazer o crawl.
+
+**Não** fecha o browser quando chamado pelo orquestrador.
 
 ---
 
@@ -227,10 +330,12 @@ Concentra o fluxo histórico do antigo `stripper.js`: **parse de argumentos**, i
 
 | Módulo | Conteúdo principal |
 |--------|---------------------|
-| `infnetShared.mjs` | `projectRoot` (raiz do repo), `ensureDir`, `fileExists`, `detectSystemChrome`, `printChromeHelp`, `loadSession` / `saveSession` / `applySession`, `login`, `gotoUrl`, `ensureAuthenticated`, `safeDirName`, `safeFileName`. |
-| `downloadManifest.mjs` | Versão do schema, `stableTranscriptItemId`, `stableDocumentItemId`, `resolveManifestRootAndPath`, `isItemCompleted`, `markArtifactCompletedIfPresent`, fila de escrita atómica por path de manifest. |
-| `browser.mjs` | Consolidação do `puppeteer.launch` e mensagens de UI headed. |
+| `infnetShared.mjs` | `projectRoot` (raiz do repo), `ensureDir`, `fileExists`, `detectSystemChrome`, `printChromeHelp`, `loadSession` / `saveSession` / `applySession`, `login`, `gotoUrl`, `ensureAuthenticated`, `safeDirName`, `safeFileName`. `saveSession` grava `session.json` sob lock (`session.json.write.lock`) e de forma atómica. |
+| `downloadManifest.mjs` | Versão do schema, `stableTranscriptItemId`, `stableDocumentItemId`, `resolveManifestRootAndPath`, `isItemCompleted`, `markArtifactCompletedIfPresent`, fila de escrita atómica por path de manifest; lock `manifest.json.queue.lock` para proteger read-modify-write em concorrência. |
+| `browser.mjs` | Consolidação do `puppeteer.launch` e mensagens de UI headed; opção `preferHeadlessUnlessHeaded` para workers (headless por defeito no cluster salvo `--headed`). |
 | `logging.mjs` | Banners `[SEÇÃO]` entre blocos do orquestrador. |
+| `workerLog.mjs` | Prefixos e cores por worker no modo cluster. |
+| `shard.mjs` | Particionamento determinístico de tarefas por worker. |
 
 ---
 
@@ -286,6 +391,15 @@ stateDiagram-v2
 ```
 
 O mesmo `session.json` na raiz do repo serve **aulas** e **documentos** no mesmo browser.
+
+### Concorrência e integridade (`session.json` / `manifest.json`)
+
+No modo multi-worker, múltiplos processos podem tentar persistir estado em simultâneo. Para manter integridade:
+
+- **`session.json`**: escrita atómica protegida por lock `session.json.write.lock`.
+- **`downloads/manifest.json`**:
+  - lock `manifest.json.queue.lock` cobrindo o ciclo **read-modify-write** (além da fila em memória),
+  - escrita atómica com fallback específico para Windows quando necessário.
 
 ---
 

@@ -40,17 +40,26 @@ Plataformas académicas costumam expor transcrições através de páginas auten
 
    ```bash
    npm install
-   npm start
+   npm start -- --lessons
    ```
 
-   Para ver o browser: `npm start -- --headed` ou `HEADLESS=0` no `.env`.
+   Para ver o browser: `npm start -- --lessons --headed` ou `HEADLESS=0` no `.env`.
+
+   Execução completa (aulas + documentos):
+
+   - `npm run all`
+
+   Execução concorrente (modo cluster / multi-worker):
+
+   - `npm start -- --all --workers 4`
+   - `npm start -- --all --sequential` (força o modo antigo)
 
 ## Visão do sistema
 
 ```mermaid
 graph LR
   subgraph Local["Máquina local"]
-    Node["Node.js + stripper.js"]
+    Node["Node.js + main.js"]
     Puppeteer["Puppeteer / Chrome"]
     Sess["session.json"]
     DL["downloads/"]
@@ -73,13 +82,15 @@ graph LR
 
 ## Arquitetura
 
-O núcleo é um único módulo ESM, `stripper.js`, que:
+O núcleo é um orquestrador ESM, `main.js`, que:
 
 1. **Resolve Chrome** — `PUPPETEER_EXECUTABLE_PATH`, deteção por SO, ou Chromium empacotado pelo Puppeteer.
 2. **Autentica** — carrega `session.json` (cookies + `localStorage`); se ainda redirecionar para `wp-login.php`, preenche formulário e grava nova sessão.
 3. **Extrai lista** — `page.evaluate` sobre `.infnetci-recording-item` e `.transcription-link`, com título de acordeão associado.
 4. **Resolve nome da disciplina** — `DISCIPLINE_NAME` / `COURSE_NAME`, texto da página, ou slug da URL.
 5. **Por aula** — abre link (popup ou mesma aba), configura pasta de download via CDP, clica no botão de download do Drive (vários seletores), espera ficheiro estável em `temp_downloads/`, move para `downloads/<secção>/` com nome slugificado e gera `.md` com `toMarkdown()`.
+
+Modo cluster (multi-worker): `--workers <n>` distribui tarefas entre N browsers para acelerar downloads; `--sequential` força um único browser em sequência. Para detalhes (fases, idempotência e limites), ver [`documentation.md`](./documentation.md).
 
 Decisões implícitas no código:
 
@@ -92,7 +103,7 @@ Decisões implícitas no código:
 ```mermaid
 sequenceDiagram
   participant U as Utilizador
-  participant S as stripper.js
+  participant S as main.js
   participant B as Browser
   participant I as infnet.online
   participant G as Google Drive
@@ -132,11 +143,13 @@ Estado persistido:
 
 | Comando | Descrição |
 |---------|-----------|
-| `npm start` | Equivalente a `node stripper.js` |
-| `node stripper.js` | Execução completa |
-| `node stripper.js --limit=3` | Processa no máximo 3 itens da lista |
-| `node stripper.js --no-download` | Lista URLs e metadados sem descarregar |
-| `node stripper.js --headed` ou `--show` | Browser visível (também `HEADLESS=0`) |
+| `npm start` | Equivalente a `node main.js` |
+| `node main.js --all` | Execução completa (aulas + documentos) |
+| `node main.js --lessons` | Apenas aulas |
+| `node main.js --docs` | Apenas documentos |
+| `node main.js --all --workers 4` | Cluster / multi-worker com 4 workers |
+| `node main.js --all --sequential` | Força execução antiga (sequencial) |
+| `node main.js --headed` ou `--show` | Browser visível (também `HEADLESS=0`) |
 
 ### Variáveis de ambiente (`.env`)
 
@@ -152,7 +165,7 @@ Estado persistido:
 Exemplo mínimo de invocação com env carregado pelo `dotenv` (após configurar `.env`):
 
 ```bash
-node stripper.js --limit=1
+node main.js --lessons --limit=1
 ```
 
 ## Ficheiros gerados e pastas
@@ -174,7 +187,7 @@ O script imprime instruções: instalar Chrome, definir `PUPPETEER_EXECUTABLE_PA
 <details>
 <summary>Nenhum `.infnetci-recording-item` na página</summary>
 
-Possíveis causas: HTML alterado, disciplina sem gravações listadas, ou sessão sem permissão para essa turma. Correr com `--headed` para inspecionar; atualizar seletores em `stripper.js` se o layout mudou.
+Possíveis causas: HTML alterado, disciplina sem gravações listadas, ou sessão sem permissão para essa turma. Correr com `--headed` para inspecionar; atualizar seletores nos scrapers (`src/scrapers/lessonScraper.js`) se o layout mudou.
 </details>
 
 <details>

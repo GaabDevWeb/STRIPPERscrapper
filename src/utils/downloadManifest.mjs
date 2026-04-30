@@ -187,7 +187,56 @@ async function atomicWriteJson(filePath, obj) {
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const payload = JSON.stringify(obj, null, 2);
   await fs.writeFile(tmp, payload, 'utf8');
-  await fs.rename(tmp, filePath);
+  try {
+    await fs.rename(tmp, filePath);
+  } catch (e) {
+    const code = /** @type {NodeJS.ErrnoException} */ (e).code;
+    if (code === 'EPERM' || code === 'EEXIST' || code === 'EBUSY') {
+      await fs.copyFile(tmp, filePath);
+      await fs.unlink(tmp).catch(() => {});
+    } else {
+      throw e;
+    }
+  }
+}
+
+/** Lock por path de manifest (vários workers / processos). */
+async function acquireManifestLock(manifestPath, opts = {}) {
+  const lockPath = `${manifestPath}.queue.lock`;
+  const staleMs = opts.staleMs ?? 300_000;
+  const timeoutMs = opts.timeoutMs ?? 600_000;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const fh = await fs.open(lockPath, 'wx');
+      await fh.writeFile(String(process.pid), 'utf8');
+      return { fh, lockPath };
+    } catch (e) {
+      const code = /** @type {NodeJS.ErrnoException} */ (e).code;
+      if (code === 'EEXIST') {
+        let st = null;
+        try {
+          st = await fs.stat(lockPath);
+        } catch {
+          /* lock removido entre-tanto */
+        }
+        if (st && Date.now() - st.mtimeMs > staleMs) {
+          await fs.unlink(lockPath).catch(() => {});
+          continue;
+        }
+        await new Promise((r) => setTimeout(r, 50 + Math.random() * 150));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error(`Timeout de lock do manifest: ${lockPath}`);
+}
+
+/** @param {{ fh: import('fs/promises').FileHandle; lockPath: string }} h */
+async function releaseManifestLock(h) {
+  await h.fh.close().catch(() => {});
+  await fs.unlink(h.lockPath).catch(() => {});
 }
 
 /**
@@ -207,16 +256,21 @@ async function updateManifest(manifestPath, mutator) {
   await next;
 
   async function doUpdate() {
-    const current = await loadManifest(manifestPath);
-    const doc = {
-      version: current.version,
-      updatedAt: current.updatedAt,
-      entries: { ...current.entries },
-    };
-    const out = mutator(doc) || doc;
-    out.version = MANIFEST_VERSION;
-    out.updatedAt = new Date().toISOString();
-    await atomicWriteJson(manifestPath, out);
+    const lock = await acquireManifestLock(manifestPath);
+    try {
+      const current = await loadManifest(manifestPath);
+      const doc = {
+        version: current.version,
+        updatedAt: current.updatedAt,
+        entries: { ...current.entries },
+      };
+      const out = mutator(doc) || doc;
+      out.version = MANIFEST_VERSION;
+      out.updatedAt = new Date().toISOString();
+      await atomicWriteJson(manifestPath, out);
+    } finally {
+      await releaseManifestLock(lock);
+    }
   }
 }
 

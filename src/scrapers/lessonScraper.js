@@ -16,6 +16,7 @@ import {
   markArtifactCompletedIfPresent,
 } from '../utils/downloadManifest.mjs';
 import { launchBrowser } from '../utils/browser.mjs';
+import { makeTaggedLoggers } from '../utils/workerLog.mjs';
 
 const DEFAULT_CLASSES_URL =
   'https://infnet.online/grupos/fundamentos-do-processamento-de-dados-26e1-26e2-93422564/infnet-ci-zoom-mettings/';
@@ -144,6 +145,78 @@ function slugify(title, index) {
 
 function gotoClasses(page, classesUrl) {
   return gotoUrl(page, classesUrl, 800);
+}
+
+/**
+ * Extrai itens da página de aulas (DOM já carregado).
+ * @param {import('puppeteer').Page} page
+ */
+async function extractLessonItemsFromPage(page) {
+  return page.evaluate(() => {
+    const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
+    const accButtons = [
+      ...document.querySelectorAll('button.infnetci-accordion-button'),
+    ];
+    const items = [...document.querySelectorAll('.infnetci-recording-item')];
+
+    return items
+      .map((el) => {
+        const h3 = el.querySelector('h3');
+        const a = el.querySelector('.transcription-link');
+        let accordionTitle = '';
+        for (const btn of accButtons) {
+          const pos = btn.compareDocumentPosition(el);
+          if (pos & FOLLOWING) {
+            accordionTitle = btn.textContent.trim();
+          }
+        }
+        return {
+          title: h3 ? h3.textContent.trim() : '',
+          href: a ? a.href : '',
+          accordionTitle,
+        };
+      })
+      .filter((x) => x.href);
+  });
+}
+
+/**
+ * Fase de mapeamento: autentica e lista todas as aulas com índice DOM estável.
+ *
+ * @param {object} ctx
+ * @param {import('puppeteer').Browser} ctx.browser
+ * @param {import('puppeteer').Page} ctx.page
+ * @returns {Promise<{ courseName: string; tasks: Array<{ domIndex: number; title: string; href: string; accordionTitle: string; transcriptItemId: string }>; classesUrl: string; emptyDiag?: object }>}
+ */
+export async function discoverLessonTasks(ctx) {
+  const { page } = ctx;
+  const classesUrl = process.env.CLASSES_URL || DEFAULT_CLASSES_URL;
+  const user = process.env.FACULDADE_USER || '';
+  const pass = process.env.FACULDADE_PASS || '';
+  const sessionPath = path.join(projectRoot, 'session.json');
+
+  await ensureAuthenticated(page, classesUrl, sessionPath, user, pass, {
+    gotoSettleMs: 800,
+  });
+
+  const itemData = await extractLessonItemsFromPage(page);
+  if (!itemData.length) {
+    const diag = await page.evaluate(() => ({
+      count: document.querySelectorAll('.infnetci-recording-item').length,
+      snippet: document.body ? document.body.innerText.slice(0, 400).replace(/\s+/g, ' ') : '',
+    }));
+    return { courseName: '', tasks: [], classesUrl, emptyDiag: diag };
+  }
+
+  const courseName = await resolveCourseTitle(page, classesUrl);
+  const tasks = itemData.map((row, i) => ({
+    domIndex: i,
+    title: row.title || `aula_${i + 1}`,
+    href: row.href,
+    accordionTitle: row.accordionTitle || '',
+    transcriptItemId: stableTranscriptItemId(row.href),
+  }));
+  return { courseName, tasks, classesUrl };
 }
 
 async function setDownloadPath(page, downloadDir) {
@@ -303,16 +376,24 @@ export async function toMarkdown(filePath, metadata) {
  * @param {object} ctx
  * @param {import('puppeteer').Browser} ctx.browser
  * @param {import('puppeteer').Page} ctx.page
+ * @param {object} [scraperOpts]
+ * @param {Array<{ domIndex: number; title: string; href: string; accordionTitle: string; transcriptItemId: string }>} [scraperOpts.tasks] — se definido, não refaz o crawl da lista (índices DOM devem corresponder à página atual)
+ * @param {string} [scraperOpts.courseName] — obrigatório se `tasks` vier de fora sem passar por `discoverLessonTasks` no mesmo fluxo
+ * @param {string} [scraperOpts.logTag] — prefixo visual (ex.: chalk) para logs
+ * @param {string} [scraperOpts.tempDownloadsDir] — pasta temporária por worker (evita colisões)
  */
-export async function runLessonScraper(ctx) {
+export async function runLessonScraper(ctx, scraperOpts = {}) {
   const { browser, page } = ctx;
   const { limit, noDownload } = parseLessonArgs();
+  const { log, error } = makeTaggedLoggers(scraperOpts.logTag);
   const classesUrl = process.env.CLASSES_URL || DEFAULT_CLASSES_URL;
   const user = process.env.FACULDADE_USER || '';
   const pass = process.env.FACULDADE_PASS || '';
   const sessionPath = path.join(projectRoot, 'session.json');
   const downloadsDir = path.join(projectRoot, 'downloads');
-  const tempDownloads = path.join(projectRoot, 'temp_downloads');
+  const tempDownloads =
+    scraperOpts.tempDownloadsDir ||
+    path.join(projectRoot, 'temp_downloads');
 
   await ensureDir(downloadsDir);
   await ensureDir(tempDownloads);
@@ -321,62 +402,64 @@ export async function runLessonScraper(ctx) {
     gotoSettleMs: 800,
   });
 
-  const itemData = await page.evaluate(() => {
-    const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
-    const accButtons = [
-      ...document.querySelectorAll('button.infnetci-accordion-button'),
-    ];
-    const items = [...document.querySelectorAll('.infnetci-recording-item')];
+  /** @type {Array<{ domIndex: number; title: string; href: string; accordionTitle: string; transcriptItemId: string }>} */
+  let workQueue;
+  let courseName;
+  let totalAulas;
 
-    return items
-      .map((el) => {
-        const h3 = el.querySelector('h3');
-        const a = el.querySelector('.transcription-link');
-        let accordionTitle = '';
-        for (const btn of accButtons) {
-          const pos = btn.compareDocumentPosition(el);
-          if (pos & FOLLOWING) {
-            accordionTitle = btn.textContent.trim();
-          }
-        }
-        return {
-          title: h3 ? h3.textContent.trim() : '',
-          href: a ? a.href : '',
-          accordionTitle,
-        };
-      })
-      .filter((x) => x.href);
-  });
-
-  if (!itemData.length) {
-    const diag = await page.evaluate(() => ({
-      count: document.querySelectorAll('.infnetci-recording-item').length,
-      snippet: document.body ? document.body.innerText.slice(0, 400).replace(/\s+/g, ' ') : '',
+  if (scraperOpts.tasks?.length) {
+    workQueue = scraperOpts.tasks;
+    courseName =
+      scraperOpts.courseName ||
+      (await resolveCourseTitle(page, classesUrl));
+    totalAulas = scraperOpts.totalDomItems ?? workQueue.length;
+  } else {
+    const itemData = await extractLessonItemsFromPage(page);
+    if (!itemData.length) {
+      const diag = await page.evaluate(() => ({
+        count: document.querySelectorAll('.infnetci-recording-item').length,
+        snippet: document.body ? document.body.innerText.slice(0, 400).replace(/\s+/g, ' ') : '',
+      }));
+      log('[ERRO]', 'Nenhum .infnetci-recording-item encontrado', JSON.stringify(diag));
+      return;
+    }
+    courseName = await resolveCourseTitle(page, classesUrl);
+    totalAulas = itemData.length;
+    workQueue = itemData.map((row, i) => ({
+      domIndex: i,
+      title: row.title || `aula_${i + 1}`,
+      href: row.href,
+      accordionTitle: row.accordionTitle || '',
+      transcriptItemId: stableTranscriptItemId(row.href),
     }));
-    console.log('[ERRO]', 'Nenhum .infnetci-recording-item encontrado', JSON.stringify(diag));
-    return;
   }
 
-  const courseName = await resolveCourseTitle(page, classesUrl);
-  const totalAulas = itemData.length;
-  const n = Math.min(totalAulas, limit);
+  const maxByLimit = Number.isFinite(limit) ? limit : Infinity;
+  const n = scraperOpts.tasks?.length
+    ? Math.min(workQueue.length, maxByLimit)
+    : Math.min(totalAulas, maxByLimit);
   const { manifestPath, manifestRoot } = resolveManifestRootAndPath(
     downloadsDir,
     downloadsDir
   );
-  console.log(`[DISCIPLINA] Baixando aulas de: ${courseName}`);
-  console.log(`[INÍCIO] Execução: até ${n} novo(s) download(s) (${totalAulas} listada(s) na página).`);
+  log(`[DISCIPLINA] Baixando aulas de: ${courseName}`);
+  log(
+    `[INÍCIO] Execução: até ${n} novo(s) download(s) (${totalAulas} listada(s) na página).`
+  );
 
   let processed = 0;
   let skippedAlreadyDone = 0;
 
-  for (let i = 0; i < itemData.length && processed < n; i++) {
-    const { title: rawTitle, href, accordionTitle } = itemData[i];
-    const title = rawTitle || `aula_${i + 1}`;
+  for (const task of workQueue) {
+    if (processed >= n) break;
+    const i = task.domIndex;
+    const title = task.title;
+    const href = task.href;
+    const accordionTitle = task.accordionTitle;
+    const transcriptItemId = task.transcriptItemId;
     const aulaNum = i + 1;
     const titleShort = title.slice(0, 72) + (title.length > 72 ? '…' : '');
     const sectionLabel = (accordionTitle && accordionTitle.trim()) || courseName;
-    const transcriptItemId = stableTranscriptItemId(href);
     try {
       if (
         !noDownload &&
@@ -389,12 +472,12 @@ export async function runLessonScraper(ctx) {
         continue;
       }
 
-      console.log(
+      log(
         `[EXTRAINDO] ${sectionLabel} — Aula ${aulaNum}/${totalAulas}: ${titleShort}`
       );
 
       if (noDownload) {
-        console.log('[OK]', `(dry-run) ${sectionLabel} | Aula ${aulaNum}:`, href);
+        log('[OK]', `(dry-run) ${sectionLabel} | Aula ${aulaNum}:`, href);
         processed++;
         continue;
       }
@@ -432,7 +515,7 @@ export async function runLessonScraper(ctx) {
           markdownAbsPath: mdWritten,
         });
         const baseName = path.basename(dest);
-        console.log('[OK]', `${sectionLabel} | Aula ${aulaNum}: ${baseName}`);
+        log('[OK]', `${sectionLabel} | Aula ${aulaNum}: ${baseName}`);
       } finally {
         if (drivePage !== page) {
           await drivePage.close().catch(() => {});
@@ -442,7 +525,7 @@ export async function runLessonScraper(ctx) {
       }
       processed++;
     } catch (err) {
-      console.error(
+      error(
         '[ERRO]',
         `${sectionLabel} | Aula ${aulaNum}:`,
         titleShort,
@@ -453,13 +536,21 @@ export async function runLessonScraper(ctx) {
   }
 
   if (skippedAlreadyDone > 0) {
-    console.log(
+    log(
       `[IDEMPOTÊNCIA] ${skippedAlreadyDone} aula(s) já registada(s) no manifest — omitidas.`
     );
   }
 }
 
-export async function runLessonScraperStandalone() {
+/**
+ * @param {object} [standaloneOpts]
+ * @param {Awaited<ReturnType<typeof discoverLessonTasks>>['tasks']} [standaloneOpts.tasks]
+ * @param {string} [standaloneOpts.courseName]
+ * @param {number} [standaloneOpts.totalDomItems]
+ * @param {string} [standaloneOpts.logTag]
+ * @param {string} [standaloneOpts.tempDownloadsDir]
+ */
+export async function runLessonScraperStandalone(standaloneOpts = {}) {
   const { headed } = parseLessonArgs();
   let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
   if (executablePath && !(await fileExists(executablePath))) {
@@ -477,7 +568,7 @@ export async function runLessonScraperStandalone() {
 
   const page = await browser.newPage();
   try {
-    await runLessonScraper({ browser, page });
+    await runLessonScraper({ browser, page }, standaloneOpts);
   } catch (e) {
     console.error('[ERRO]', e instanceof Error ? e.message : e);
     process.exitCode = 1;

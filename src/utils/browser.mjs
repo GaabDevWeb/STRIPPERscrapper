@@ -22,11 +22,15 @@ export async function resolveExecutablePath() {
 }
 
 /**
- * @param {{ headed?: boolean }} opts
+ * @param {{ headed?: boolean; preferHeadlessUnlessHeaded?: boolean }} opts
+ * @description Com `preferHeadlessUnlessHeaded`, ignora `HEADLESS=0` no .env (útil para workers em cluster).
  */
 export function buildLaunchOptions(opts = {}) {
   const headed = opts.headed ?? false;
-  const showBrowser = headed || process.env.HEADLESS === '0';
+  const preferHeadless = Boolean(opts.preferHeadlessUnlessHeaded);
+  const showBrowser = preferHeadless
+    ? headed
+    : headed || process.env.HEADLESS === '0';
   if (showBrowser) {
     console.log('[UI] Browser visível (use --headed ou HEADLESS=0 no .env)');
   }
@@ -40,7 +44,7 @@ export function buildLaunchOptions(opts = {}) {
 }
 
 /**
- * @param {{ headed?: boolean }} opts
+ * @param {{ headed?: boolean; preferHeadlessUnlessHeaded?: boolean }} opts
  * @returns {Promise<import('puppeteer').Browser>}
  */
 export async function launchBrowser(opts = {}) {

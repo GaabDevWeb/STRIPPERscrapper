@@ -25,6 +25,7 @@ import {
   markArtifactCompletedIfPresent,
 } from '../utils/downloadManifest.mjs';
 import { launchBrowser } from '../utils/browser.mjs';
+import { makeTaggedLoggers } from '../utils/workerLog.mjs';
 
 const DEFAULT_DOCUMENTS_URL =
   'https://infnet.online/grupos/fundamentos-do-processamento-de-dados-26e1-26e2-93422564/documents/';
@@ -238,47 +239,17 @@ async function downloadBinaryWithSession(page, fileUrl, destPath, opts) {
 }
 
 /**
- * @param {object} ctx
- * @param {import('puppeteer').Browser} ctx.browser
- * @param {import('puppeteer').Page} ctx.page
+ * BFS só para mapear ficheiros elegíveis (sem download).
+ * @param {import('puppeteer').Page} page
+ * @param {{ documentsUrl: string; outputDir: string; maxDepth: number; extensions: Set<string> }} cfg
+ * @returns {Promise<Array<{ downloadUrl: string; title: string; extHint: string; relParts: string[]; listUrl: string; ext: string; documentItemId: string }>>}
  */
-export async function runDocumentScraper(ctx) {
-  const { page } = ctx;
-  const { documentsUrl, outputDir, dryRun, ignoreManifest, maxDepth, extensions } =
-    parseDocumentArgs();
-
-  const user = process.env.FACULDADE_USER || '';
-  const pass = process.env.FACULDADE_PASS || '';
-  const sessionPath = path.join(projectRoot, 'session.json');
-  const maxBytes =
-    Number(process.env.DOCUMENTS_MAX_BYTES || 500 * 1024 * 1024) || 500 * 1024 * 1024;
-  const fetchTimeoutMs = Number(process.env.DOCUMENTS_FETCH_TIMEOUT_MS || 300000) || 300000;
-
-  if (!documentsUrl.includes('/documents')) {
-    console.warn('[AVISO] URL não contém /documents — confirme DOCUMENTS_URL / --documents-url=');
-  }
-
-  page.setDefaultNavigationTimeout(120000);
-
-  await ensureAuthenticated(page, documentsUrl, sessionPath, user, pass);
-
+async function collectDocumentTasksFromSite(page, cfg) {
+  const { documentsUrl, outputDir, maxDepth, extensions } = cfg;
   const visited = new Set();
   const queue = [{ listUrl: normalizeListUrl(documentsUrl), depth: 0, relParts: [] }];
-  let downloaded = 0;
-  let skipped = 0;
-  let skippedManifest = 0;
-  let errors = 0;
-
-  const downloadsRootDefault = path.join(projectRoot, 'downloads');
-  const { manifestPath, manifestRoot } = resolveManifestRootAndPath(
-    downloadsRootDefault,
-    outputDir
-  );
-  console.log(
-    `[MANIFEST] ${manifestPath} (raiz de caminhos relativos: ${manifestRoot}) — idempotência ${
-      ignoreManifest ? 'desativada (--ignore-manifest ou DOCUMENTS_IGNORE_MANIFEST)' : 'ativa'
-    }`
-  );
+  /** @type {Array<{ downloadUrl: string; title: string; extHint: string; relParts: string[]; listUrl: string; ext: string; documentItemId: string }>} */
+  const tasks = [];
 
   while (queue.length) {
     const job = queue.shift();
@@ -286,18 +257,14 @@ export async function runDocumentScraper(ctx) {
     if (visited.has(key)) continue;
     visited.add(key);
 
-    console.log(`[PASTA] depth=${job.depth} → ${key}`);
     let listing;
     try {
       listing = await loadListing(page, job.listUrl);
-    } catch (e) {
-      console.error('[ERRO] listagem', key, e instanceof Error ? e.message : e);
-      errors++;
+    } catch {
       continue;
     }
 
     const { folders, files } = listing;
-    console.log(`  subpastas: ${folders.length} | ficheiros (DOM): ${files.length}`);
 
     if (job.depth < maxDepth) {
       for (const f of folders) {
@@ -310,8 +277,6 @@ export async function runDocumentScraper(ctx) {
           relParts: [...job.relParts, part],
         });
       }
-    } else if (folders.length) {
-      console.warn(`  [AVISO] max-depth=${maxDepth}; ${folders.length} pastas não exploradas neste ramo`);
     }
 
     const baseDir =
@@ -320,11 +285,103 @@ export async function runDocumentScraper(ctx) {
 
     for (const file of files) {
       const ext = extFromTitle(file.title, file.extHint);
+      if (!extensions.has(ext)) continue;
+      const documentItemId = stableDocumentItemId(file.downloadUrl);
+      tasks.push({
+        downloadUrl: file.downloadUrl.split('#')[0],
+        title: file.title,
+        extHint: file.extHint,
+        relParts: [...job.relParts],
+        listUrl: job.listUrl,
+        ext,
+        documentItemId,
+      });
+    }
+  }
+  return tasks;
+}
+
+/**
+ * Fase de mapeamento: autentica e percorre pastas; devolve lista plana de URLs.
+ *
+ * @param {object} ctx
+ * @param {import('puppeteer').Browser} ctx.browser
+ * @param {import('puppeteer').Page} ctx.page
+ */
+export async function discoverDocumentTasks(ctx) {
+  const { page } = ctx;
+  const { documentsUrl, outputDir, maxDepth, extensions } = parseDocumentArgs();
+  const user = process.env.FACULDADE_USER || '';
+  const pass = process.env.FACULDADE_PASS || '';
+  const sessionPath = path.join(projectRoot, 'session.json');
+
+  page.setDefaultNavigationTimeout(120000);
+  await ensureAuthenticated(page, documentsUrl, sessionPath, user, pass);
+
+  const tasks = await collectDocumentTasksFromSite(page, {
+    documentsUrl,
+    outputDir,
+    maxDepth,
+    extensions,
+  });
+  return { tasks, documentsUrl, outputDir };
+}
+
+/**
+ * @param {object} ctx
+ * @param {import('puppeteer').Browser} ctx.browser
+ * @param {import('puppeteer').Page} ctx.page
+ * @param {object} [scraperOpts]
+ * @param {Array<{ downloadUrl: string; title: string; extHint: string; relParts: string[]; listUrl: string; ext: string; documentItemId: string }>} [scraperOpts.tasks] — se definido, não refaz o crawl BFS
+ * @param {string} [scraperOpts.logTag]
+ */
+export async function runDocumentScraper(ctx, scraperOpts = {}) {
+  const { page } = ctx;
+  const { documentsUrl, outputDir, dryRun, ignoreManifest, maxDepth, extensions } =
+    parseDocumentArgs();
+  const { log, error, warn } = makeTaggedLoggers(scraperOpts.logTag);
+
+  const user = process.env.FACULDADE_USER || '';
+  const pass = process.env.FACULDADE_PASS || '';
+  const sessionPath = path.join(projectRoot, 'session.json');
+  const maxBytes =
+    Number(process.env.DOCUMENTS_MAX_BYTES || 500 * 1024 * 1024) || 500 * 1024 * 1024;
+  const fetchTimeoutMs = Number(process.env.DOCUMENTS_FETCH_TIMEOUT_MS || 300000) || 300000;
+
+  if (!documentsUrl.includes('/documents')) {
+    warn('[AVISO] URL não contém /documents — confirme DOCUMENTS_URL / --documents-url=');
+  }
+
+  page.setDefaultNavigationTimeout(120000);
+
+  await ensureAuthenticated(page, documentsUrl, sessionPath, user, pass);
+
+  let downloaded = 0;
+  let skipped = 0;
+  let skippedManifest = 0;
+  let errors = 0;
+  let visitedSize = 0;
+
+  const downloadsRootDefault = path.join(projectRoot, 'downloads');
+  const { manifestPath, manifestRoot } = resolveManifestRootAndPath(
+    downloadsRootDefault,
+    outputDir
+  );
+  log(
+    `[MANIFEST] ${manifestPath} (raiz de caminhos relativos: ${manifestRoot}) — idempotência ${
+      ignoreManifest ? 'desativada (--ignore-manifest ou DOCUMENTS_IGNORE_MANIFEST)' : 'ativa'
+    }`
+  );
+
+  if (scraperOpts.tasks?.length) {
+    visitedSize = 0;
+    for (const file of scraperOpts.tasks) {
+      const ext = file.ext || extFromTitle(file.title, file.extHint);
       if (!extensions.has(ext)) {
         skipped++;
         continue;
       }
-      const documentItemId = stableDocumentItemId(file.downloadUrl);
+      const documentItemId = file.documentItemId || stableDocumentItemId(file.downloadUrl);
       if (
         !dryRun &&
         !ignoreManifest &&
@@ -336,19 +393,24 @@ export async function runDocumentScraper(ctx) {
         skippedManifest++;
         continue;
       }
+      const baseDir =
+        file.relParts.length === 0 ? outputDir : path.join(outputDir, ...file.relParts);
+      await ensureDir(baseDir);
       let base = safeFileName(file.title);
       if (!/\.[a-z0-9]+$/i.test(base)) {
         base = `${base}.${ext}`;
       }
       const destPath = await uniqueDestPath(baseDir, base);
       if (dryRun) {
-        console.log(`  [dry-run] ${path.relative(outputDir, destPath) || base} ← ${file.downloadUrl}`);
+        log(
+          `  [dry-run] ${path.relative(outputDir, destPath) || base} ← ${file.downloadUrl}`
+        );
         continue;
       }
       try {
         await downloadBinaryWithSession(page, file.downloadUrl, destPath, {
           maxBytes,
-          referer: job.listUrl,
+          referer: file.listUrl,
           fetchTimeoutMs,
         });
         await markArtifactCompletedIfPresent({
@@ -360,21 +422,123 @@ export async function runDocumentScraper(ctx) {
           artifactAbsPath: destPath,
         });
         downloaded++;
-        console.log(`  [OK] ${path.relative(projectRoot, destPath)}`);
+        log(`  [OK] ${path.relative(projectRoot, destPath)}`);
       } catch (e) {
         errors++;
-        console.error(`  [ERRO] ${base}`, e instanceof Error ? e.message : e);
+        error(`  [ERRO] ${base}`, e instanceof Error ? e.message : e);
         await fs.unlink(destPath).catch(() => {});
       }
     }
+  } else {
+    const visited = new Set();
+    const queue = [{ listUrl: normalizeListUrl(documentsUrl), depth: 0, relParts: [] }];
+
+    while (queue.length) {
+      const job = queue.shift();
+      const key = normalizeListUrl(job.listUrl);
+      if (visited.has(key)) continue;
+      visited.add(key);
+
+      log(`[PASTA] depth=${job.depth} → ${key}`);
+      let listing;
+      try {
+        listing = await loadListing(page, job.listUrl);
+      } catch (e) {
+        error('[ERRO] listagem', key, e instanceof Error ? e.message : e);
+        errors++;
+        continue;
+      }
+
+      const { folders, files } = listing;
+      log(`  subpastas: ${folders.length} | ficheiros (DOM): ${files.length}`);
+
+      if (job.depth < maxDepth) {
+        for (const f of folders) {
+          const childKey = normalizeListUrl(f.listUrl);
+          if (visited.has(childKey)) continue;
+          const part = safeDirName(f.label);
+          queue.push({
+            listUrl: childKey,
+            depth: job.depth + 1,
+            relParts: [...job.relParts, part],
+          });
+        }
+      } else if (folders.length) {
+        warn(
+          `  [AVISO] max-depth=${maxDepth}; ${folders.length} pastas não exploradas neste ramo`
+        );
+      }
+
+      const baseDir =
+        job.relParts.length === 0 ? outputDir : path.join(outputDir, ...job.relParts);
+      await ensureDir(baseDir);
+
+      for (const file of files) {
+        const ext = extFromTitle(file.title, file.extHint);
+        if (!extensions.has(ext)) {
+          skipped++;
+          continue;
+        }
+        const documentItemId = stableDocumentItemId(file.downloadUrl);
+        if (
+          !dryRun &&
+          !ignoreManifest &&
+          (await isItemCompleted(manifestPath, documentItemId, {
+            verifyArtifact: true,
+            manifestRoot,
+          }))
+        ) {
+          skippedManifest++;
+          continue;
+        }
+        let base = safeFileName(file.title);
+        if (!/\.[a-z0-9]+$/i.test(base)) {
+          base = `${base}.${ext}`;
+        }
+        const destPath = await uniqueDestPath(baseDir, base);
+        if (dryRun) {
+          log(
+            `  [dry-run] ${path.relative(outputDir, destPath) || base} ← ${file.downloadUrl}`
+          );
+          continue;
+        }
+        try {
+          await downloadBinaryWithSession(page, file.downloadUrl, destPath, {
+            maxBytes,
+            referer: job.listUrl,
+            fetchTimeoutMs,
+          });
+          await markArtifactCompletedIfPresent({
+            manifestPath,
+            manifestRoot,
+            itemId: documentItemId,
+            kind: 'document',
+            sourceUrl: file.downloadUrl,
+            artifactAbsPath: destPath,
+          });
+          downloaded++;
+          log(`  [OK] ${path.relative(projectRoot, destPath)}`);
+        } catch (e) {
+          errors++;
+          error(`  [ERRO] ${base}`, e instanceof Error ? e.message : e);
+          await fs.unlink(destPath).catch(() => {});
+        }
+      }
+    }
+    visitedSize = visited.size;
   }
 
-  console.log(
-    `[FIM] descarregados: ${downloaded} | ignorados (extensão): ${skipped} | já no manifest: ${skippedManifest} | erros: ${errors} | pastas visitadas: ${visited.size}`
+  log(
+    `[FIM] descarregados: ${downloaded} | ignorados (extensão): ${skipped} | já no manifest: ${skippedManifest} | erros: ${errors} | pastas visitadas: ${visitedSize}`
   );
 }
 
-export async function runDocumentScraperStandalone() {
+/**
+ * @param {object} [standaloneOpts]
+ * @param {Awaited<ReturnType<typeof discoverDocumentTasks>>['tasks']} [standaloneOpts.tasks]
+ * @param {string} [standaloneOpts.logTag]
+ */
+export async function runDocumentScraperStandalone(standaloneOpts = {}) {
   const { headed } = parseDocumentArgs();
   let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
   if (executablePath && !(await fileExists(executablePath))) {
@@ -392,7 +556,7 @@ export async function runDocumentScraperStandalone() {
 
   const page = await browser.newPage();
   try {
-    await runDocumentScraper({ browser, page });
+    await runDocumentScraper({ browser, page }, standaloneOpts);
   } catch (e) {
     console.error('[FATAL]', e);
     process.exitCode = 1;
