@@ -6,6 +6,10 @@
 
 > Ferramenta **local** (Node.js + Puppeteer) que automatiza, para um utilizador autenticado no portal **Infnet** (`infnet.online`, WordPress), a extração de **transcrições de aulas** (via Google Drive) e de **documentos BuddyPress**, com cópia organizada no disco e metadados em Markdown onde aplicável.
 
+<p align="left">
+  <img src="./assets/logs.gif" alt="StripperScrapper — dashboard TUI com vários workers a processar aulas e logs" width="680" />
+</p>
+
 Não existe servidor HTTP nem API exposta: tudo corre na máquina do utilizador. A referência técnica completa está em [`documentation.md`](./documentation.md).
 
 ## Table of Contents
@@ -24,6 +28,7 @@ Não existe servidor HTTP nem API exposta: tudo corre na máquina do utilizador.
 - [Segurança e conformidade](#segurança-e-conformidade)
 - [Troubleshooting](#troubleshooting)
 - [Manutenção e documentação](#manutenção-e-documentação)
+- [Dashboard (TUI)](#dashboard-tui)
 
 ## Propósito e âmbito
 
@@ -107,7 +112,7 @@ $env:HEADLESS="0"; npm run lessons -- --limit=2
 
 Exemplos: `--limit=N`, `--headed` / `--show`, `--documents-url=`, `--output=`, `--dry-run`, `--no-download`, `--ignore-manifest`, `--max-depth=`, `--extensions=`. Detalhe em [`documentation.md`](./documentation.md).
 
-O **dashboard TUI** (blessed) é o padrão quando há TTY; usar `--no-dashboard` para logs simples.
+Com TTY disponível, o **dashboard TUI** (`blessed` / `blessed-contrib`) é o padrão; `--no-dashboard` desativa-o. Exemplo visual no [fim do README](#dashboard-tui).
 
 ## Modo cluster / multi-worker
 
@@ -286,5 +291,3 @@ Sessão expirada ou sem permissão. Verificar `DOCUMENTS_URL` e voltar a autenti
 |-----------|--------|
 | [**documentation.md**](./documentation.md) | Referência técnica: fluxos, cluster, manifest, CLI completa, ciclo de sessão, limitações |
 | **README.md** (este ficheiro) | Onboarding e operação rápida |
-
-
