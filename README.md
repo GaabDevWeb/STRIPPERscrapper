@@ -14,6 +14,7 @@ Não existe servidor HTTP nem API exposta: tudo corre na máquina do utilizador.
 - [O que faz (e o que não faz)](#o-que-faz-e-o-que-não-faz)
 - [Quick start](#quick-start)
 - [Comandos e orquestrador](#comandos-e-orquestrador)
+- [Dashboard (TUI)](#dashboard-tui)
 - [Modo cluster / multi-worker](#modo-cluster--multi-worker)
 - [Variáveis de ambiente](#variáveis-de-ambiente)
 - [Visão do sistema](#visão-do-sistema)
@@ -107,7 +108,15 @@ $env:HEADLESS="0"; npm run lessons -- --limit=2
 
 Exemplos: `--limit=N`, `--headed` / `--show`, `--documents-url=`, `--output=`, `--dry-run`, `--no-download`, `--ignore-manifest`, `--max-depth=`, `--extensions=`. Detalhe em [`documentation.md`](./documentation.md).
 
-O **dashboard TUI** (blessed) é o padrão quando há TTY; usar `--no-dashboard` para logs simples.
+## Dashboard (TUI)
+
+Com terminal interativo (TTY) e modo com workers, o orquestrador mostra **progresso global**, **métricas de transferência**, **estado por worker** e **logs** em tempo real (`blessed` / `blessed-contrib`). Gravação de exemplo:
+
+<p align="center">
+  <img src="./assets/logs.gif" alt="StripperScrapper — dashboard TUI com vários workers a processar aulas e logs" width="900" />
+</p>
+
+Por defeito o dashboard está ativo; usa `--no-dashboard` para saída só em texto (CI, pipes ou ambientes sem TTY adequado).
 
 ## Modo cluster / multi-worker
 
