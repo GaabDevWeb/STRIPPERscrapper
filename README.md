@@ -291,6 +291,3 @@ Sessão expirada ou sem permissão. Verificar `DOCUMENTS_URL` e voltar a autenti
 |-----------|--------|
 | [**documentation.md**](./documentation.md) | Referência técnica: fluxos, cluster, manifest, CLI completa, ciclo de sessão, limitações |
 | **README.md** (este ficheiro) | Onboarding e operação rápida |
-
-
-
