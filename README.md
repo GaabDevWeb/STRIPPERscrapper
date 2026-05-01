@@ -6,6 +6,10 @@
 
 > Ferramenta **local** (Node.js + Puppeteer) que automatiza, para um utilizador autenticado no portal **Infnet** (`infnet.online`, WordPress), a extração de **transcrições de aulas** (via Google Drive) e de **documentos BuddyPress**, com cópia organizada no disco e metadados em Markdown onde aplicável.
 
+<p align="left">
+  <img src="./assets/logs.gif" alt="StripperScrapper — dashboard TUI com vários workers a processar aulas e logs" width="680" />
+</p>
+
 Não existe servidor HTTP nem API exposta: tudo corre na máquina do utilizador. A referência técnica completa está em [`documentation.md`](./documentation.md).
 
 ## Table of Contents
@@ -287,21 +291,6 @@ Sessão expirada ou sem permissão. Verificar `DOCUMENTS_URL` e voltar a autenti
 |-----------|--------|
 | [**documentation.md**](./documentation.md) | Referência técnica: fluxos, cluster, manifest, CLI completa, ciclo de sessão, limitações |
 | **README.md** (este ficheiro) | Onboarding e operação rápida |
-| **`VALIDACAO_SELETORES.md`** | Se existir localmente, checklist de regressão visual (pode estar no `.gitignore`) |
-| **`.agent_history.md`** | Se existir na raiz, decisões de fluxos de agente |
 
-*Em caso de divergência entre documentação e comportamento, prevalece o código em `main.js` e `src/`.*
 
-## Dashboard (TUI)
 
-Com terminal interativo e modo com **workers**, o orquestrador mostra progresso global, métricas de transferência, estado por worker e logs em tempo real. Gravação de exemplo:
-
-<p align="center">
-  <img src="./assets/logs.gif" alt="StripperScrapper — dashboard TUI com vários workers a processar aulas e logs" width="680" />
-</p>
-
-Por defeito o dashboard está ativo; usa `--no-dashboard` para saída só em texto (CI, pipes ou ambientes sem TTY adequado).
-
----
-
-Licença e badges de CI: não definidos neste repositório; adicionar apenas com fonte verificável.
