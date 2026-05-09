@@ -3,6 +3,4 @@ node_modules/
 .env
 session.json
 
-downloads/
 temp_downloads/
-package-lock.json
