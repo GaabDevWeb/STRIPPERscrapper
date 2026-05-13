@@ -1,16 +1,81 @@
-- name: Push downloads to data repository
+name: Stripper Scrapper
+on:
+  workflow_dispatch:
+  # GitHub usa UTC. 09:00 UTC = 06:00 em Brasília (UTC−3, sem horário de verão).
+  schedule:
+    - cron: '0 9 * * *'
+# Só leitura neste repo; o push dos dados usa PAT noutro repositório.
+permissions:
+  contents: read
+jobs:
+  run-scrapper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+      # --install-deps falha sem root e, com sudo, o Chrome ia para ~/.cache do root — o job corre como runner.
+      - name: Install OS libraries for Chrome (headless)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ca-certificates fonts-liberation \
+            libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libcairo2 libcups2t64 \
+            libdbus-1-3 libexpat1 libfontconfig1 libgbm1 libglib2.0-0t64 libgtk-3-0t64 \
+            libnspr4 libnss3 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 \
+            libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 \
+            libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 \
+            xdg-utils
+
+      - name: Install Chrome for Puppeteer
+        run: npx puppeteer browsers install chrome
+
+      # --sequential: um browser faz aulas e depois documentos com crawl BFS completo.
+      # Com --workers em cluster, documentos dependem só do mapa inicial; se a descoberta vier vazia, o fluxo fica frágil no CI.
+      - name: Execute scrapper
+        run: node main.js --all --sequential
         env:
-          # Destino atualizado para o repositório solicitado
-          DATA_REPO: 'GaabDevWeb/ISS'
+          CI: 'true'
+          HEADLESS: 'true'
+          # Código usa FACULDADE_USER (.env.example); USER_LOGIN mantém compat. com secrets antigos
+          FACULDADE_USER: ${{ secrets.FACULDADE_USER || secrets.USER_LOGIN }}
+          FACULDADE_PASS: ${{ secrets.FACULDADE_PASS }}
+          CLASSES_URL: ${{ secrets.CLASSES_URL }}
+          # Nome exacto do secret no GitHub: DOCUMENTS_URL (fallbacks por nomes comuns errados)
+          DOCUMENTS_URL: ${{ secrets.DOCUMENTS_URL || secrets.DOCUMENT_URL || secrets.DOCS_URL }}
+          # Garante pasta canónica (igual ao default do código)
+          DOCUMENTS_OUTPUT_DIR: ${{ github.workspace }}/downloads/documents
+
+      - name: Resumo de downloads (debug)
+
+        if: success() || failure()
+        run: |
+          echo "=== downloads/ (nível superior) ==="
+          ls -la downloads 2>/dev/null || echo "(inexistente)"
+          echo "=== downloads/documents/ (BuddyPress) ==="
+          ls -la downloads/documents 2>/dev/null || echo "(ainda sem documents — ver log do scraper e DOCUMENTS_URL)"
+
+      - name: Push downloads to data repository
+        env:
+          # Destino: https://github.com/GaabDevWeb/ISS — sobrescreve com variável DOWNLOADS_REPO (owner/repo) se precisares
+          # PAT: GitHub não permite ao GITHUB_TOKEN dar push noutro repo. Cria um token (classic: scope "repo" OU fine-grained: Contents write só neste destino) e guarda como secret abaixo.
+          DATA_REPO: ${{ vars.DOWNLOADS_REPO || 'GaabDevWeb/ISS' }}
           DATA_BRANCH: ${{ vars.DOWNLOADS_BRANCH }}
-          # Secret atualizado para ISS_REPO_TOKEN
-          TOKEN: ${{ secrets.ISS_REPO_TOKEN }}
+          TOKEN: ${{ secrets.ISS_REPO_TOKEN || secrets.DOWNLOADS_REPO_TOKEN || secrets.ISS_WORFLOW_PAT }}
         run: |
           set -euo pipefail
           if [ -z "${TOKEN:-}" ]; then
             echo "::error::Falta secret com PAT para push em ${DATA_REPO}."
             echo "No repositório DO SCRAPER: Settings → Secrets and variables → Actions → New repository secret."
-            echo "Nome: ISS_REPO_TOKEN. Valor: Personal Access Token com escrita no repo de destino."
+            echo "Nome: ISS_REPO_TOKEN (ou DOWNLOADS_REPO_TOKEN / ISS_WORFLOW_PAT). Valor: Personal Access Token com escrita no repo de destino."
             echo "Criar token: GitHub → Settings (da tua conta) → Developer settings → Personal access tokens."
             exit 1
           fi
