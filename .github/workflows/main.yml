@@ -38,10 +38,9 @@ jobs:
       - name: Install Chrome for Puppeteer
         run: npx puppeteer browsers install chrome
 
-      # --sequential: um browser faz aulas e depois documentos com crawl BFS completo.
-      # Com --workers em cluster, documentos dependem só do mapa inicial; se a descoberta vier vazia, o fluxo fica frágil no CI.
-      - name: Execute scrapper
-        run: node main.js --all --sequential
+      # Duas invocações ao Node (processos e browsers distintos): evita uma sessão longa aulas+docs e falhas silenciosas em documentos no CI.
+      - name: Execute scrapper (aulas)
+        run: node main.js --lessons --sequential
         env:
           CI: 'true'
           HEADLESS: 'true'
@@ -54,6 +53,18 @@ jobs:
           # Garante pasta canónica (igual ao default do código)
           DOCUMENTS_OUTPUT_DIR: ${{ github.workspace }}/downloads/documents
 
+      - name: Execute scrapper (documentos)
+        if: success() || failure()
+        run: node main.js --docs --sequential
+        env:
+          CI: 'true'
+          HEADLESS: 'true'
+          FACULDADE_USER: ${{ secrets.FACULDADE_USER || secrets.USER_LOGIN }}
+          FACULDADE_PASS: ${{ secrets.FACULDADE_PASS }}
+          CLASSES_URL: ${{ secrets.CLASSES_URL }}
+          DOCUMENTS_URL: ${{ secrets.DOCUMENTS_URL || secrets.DOCUMENT_URL || secrets.DOCS_URL }}
+          DOCUMENTS_OUTPUT_DIR: ${{ github.workspace }}/downloads/documents
+
       - name: Resumo de downloads (debug)
 
         if: success() || failure()
@@ -64,6 +75,7 @@ jobs:
           ls -la downloads/documents 2>/dev/null || echo "(ainda sem documents — ver log do scraper e DOCUMENTS_URL)"
 
       - name: Push downloads to data repository
+        if: success() || failure()
         env:
           # Destino: https://github.com/GaabDevWeb/ISS — sobrescreve com variável DOWNLOADS_REPO (owner/repo) se precisares
           # PAT: GitHub não permite ao GITHUB_TOKEN dar push noutro repo. Cria um token (classic: scope "repo" OU fine-grained: Contents write só neste destino) e guarda como secret abaixo.
