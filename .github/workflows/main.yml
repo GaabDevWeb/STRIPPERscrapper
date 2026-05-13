@@ -2,11 +2,9 @@ name: Stripper Scrapper
 
 on:
   workflow_dispatch:
-  # GitHub usa UTC. 09:00 UTC = 06:00 em Brasília (UTC−3, sem horário de verão).
   schedule:
     - cron: '0 9 * * *'
 
-# Só leitura neste repo; o push dos dados usa PAT noutro repositório.
 permissions:
   contents: read
 
@@ -28,7 +26,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # --install-deps falha sem root e, com sudo, o Chrome ia para ~/.cache do root — o job corre como runner.
       - name: Install OS libraries for Chrome (headless)
         run: |
           sudo apt-get update
@@ -44,61 +41,40 @@ jobs:
       - name: Install Chrome for Puppeteer
         run: npx puppeteer browsers install chrome
 
-      # --sequential: um browser faz aulas e depois documentos com crawl BFS completo.
-      # Com --workers em cluster, documentos dependem só do mapa inicial; se a descoberta vier vazia, o fluxo fica frágil no CI.
       - name: Execute scrapper
-        run: node main.js --all --sequential
+        run: node main.js --all --workers 10
         env:
           CI: 'true'
           HEADLESS: 'true'
-          # Código usa FACULDADE_USER (.env.example); USER_LOGIN mantém compat. com secrets antigos
           FACULDADE_USER: ${{ secrets.FACULDADE_USER || secrets.USER_LOGIN }}
           FACULDADE_PASS: ${{ secrets.FACULDADE_PASS }}
           CLASSES_URL: ${{ secrets.CLASSES_URL }}
-          # Nome exacto do secret no GitHub: DOCUMENTS_URL (fallbacks por nomes comuns errados)
-          DOCUMENTS_URL: ${{ secrets.DOCUMENTS_URL || secrets.DOCUMENT_URL || secrets.DOCS_URL }}
-          # Garante pasta canónica (igual ao default do código)
-          DOCUMENTS_OUTPUT_DIR: ${{ github.workspace }}/downloads/documents
+          DOCUMENTS_URL: ${{ secrets.DOCUMENTS_URL }}
 
-      - name: Resumo de downloads (debug)
-        if: success() || failure()
-        run: |
-          echo "=== downloads/ (nível superior) ==="
-          ls -la downloads 2>/dev/null || echo "(inexistente)"
-          echo "=== downloads/documents/ (BuddyPress) ==="
-          ls -la downloads/documents 2>/dev/null || echo "(ainda sem documents — ver log do scraper e DOCUMENTS_URL)"
-
-      - name: Push downloads to data repository
+      - name: Commit downloads to ISS repo
         env:
-          # Destino: https://github.com/GaabDevWeb/ISS-Worflow — sobrescreve com variável DOWNLOADS_REPO (owner/repo) se precisares
-          # PAT: GitHub não permite ao GITHUB_TOKEN dar push noutro repo. Cria um token (classic: scope "repo" OU fine-grained: Contents write só neste destino) e guarda como secret abaixo.
-          DATA_REPO: ${{ vars.DOWNLOADS_REPO || 'GaabDevWeb/ISS-Worflow' }}
-          DATA_BRANCH: ${{ vars.DOWNLOADS_BRANCH }}
-          TOKEN: ${{ secrets.DOWNLOADS_REPO_TOKEN || secrets.ISS_WORFLOW_PAT }}
+          ISS_TOKEN: ${{ secrets.ISS_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${TOKEN:-}" ]; then
-            echo "::error::Falta secret com PAT para push em ${DATA_REPO}."
-            echo "No repositório DO SCRAPER: Settings → Secrets and variables → Actions → New repository secret."
-            echo "Nome: DOWNLOADS_REPO_TOKEN (ou ISS_WORFLOW_PAT). Valor: Personal Access Token com escrita no repo de destino."
-            echo "Criar token: GitHub → Settings (da tua conta) → Developer settings → Personal access tokens."
+          if [ -z "${ISS_TOKEN:-}" ]; then
+            echo "::error::Configure o secret ISS_REPO_TOKEN (fine-grained ou classic PAT) com permissão contents:write em https://github.com/GaabDevWeb/ISS"
             exit 1
           fi
-          BRANCH="${DATA_BRANCH:-main}"
-          if [ ! -d "${GITHUB_WORKSPACE}/downloads" ] || [ -z "$(ls -A "${GITHUB_WORKSPACE}/downloads" 2>/dev/null || true)" ]; then
-            echo "::warning::Pasta downloads/ vazia ou inexistente; nada a enviar."
+          if [ ! -d downloads ]; then
+            echo "::warning::Pasta downloads/ inexistente após o scraper; skip push ao ISS"
             exit 0
           fi
-          git clone --depth 1 -b "$BRANCH" "https://x-access-token:${TOKEN}@github.com/${DATA_REPO}.git" /tmp/data-repo
-          mkdir -p /tmp/data-repo/downloads
-          rsync -a "${GITHUB_WORKSPACE}/downloads/" /tmp/data-repo/downloads/
-          cd /tmp/data-repo
+          rm -rf .iss-sync
+          git clone --depth 1 "https://x-access-token:${ISS_TOKEN}@github.com/GaabDevWeb/ISS.git" .iss-sync
+          mkdir -p .iss-sync/downloads
+          rsync -a --delete downloads/ .iss-sync/downloads/
+          cd .iss-sync
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f downloads/
+          git add downloads/
           if git diff --staged --quiet; then
-            echo "Sem alterações no repositório de dados."
+            echo "Sem alterações em downloads/ no repo ISS"
           else
-            git commit -m "chore: dados do scraper [skip ci]"
-            git push origin "$BRANCH"
+            git commit -m "chore: dados do scraper STRIPPERscrapper [skip ci]"
+            git push origin HEAD
           fi
