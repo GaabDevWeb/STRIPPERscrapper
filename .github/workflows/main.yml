@@ -42,7 +42,7 @@ jobs:
         run: npx puppeteer browsers install chrome
 
       - name: Execute scrapper
-        run: node main.js --all --workers 10
+        run: node main.js --all --sequential
         env:
           CI: 'true'
           HEADLESS: 'true'
@@ -50,6 +50,18 @@ jobs:
           FACULDADE_PASS: ${{ secrets.FACULDADE_PASS }}
           CLASSES_URL: ${{ secrets.CLASSES_URL }}
           DOCUMENTS_URL: ${{ secrets.DOCUMENTS_URL }}
+
+      - name: Resumo da pasta downloads (diagnóstico)
+        if: always()
+        run: |
+          if [ -d downloads ]; then
+            echo "=== Árvore downloads (máx. 4 níveis) ==="
+            find downloads -maxdepth 4 -type d | head -200
+            echo "=== documents/ ==="
+            ls -la downloads/documents 2>/dev/null || echo "(pasta downloads/documents ausente ou vazia)"
+          else
+            echo "(pasta downloads ausente)"
+          fi
 
       - name: Commit downloads to ISS repo
         env:
@@ -71,7 +83,8 @@ jobs:
           cd .iss-sync
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add downloads/
+          # -f: ficheiros ignorados por .gitignore no repo ISS continuam a ser versionados (ex.: extensões raras).
+          git add -f downloads/
           if git diff --staged --quiet; then
             echo "Sem alterações em downloads/ no repo ISS"
           else
