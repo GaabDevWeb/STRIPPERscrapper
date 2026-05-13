@@ -49,11 +49,7 @@ jobs:
           FACULDADE_USER: ${{ secrets.FACULDADE_USER || secrets.USER_LOGIN }}
           FACULDADE_PASS: ${{ secrets.FACULDADE_PASS }}
           CLASSES_URL: ${{ secrets.CLASSES_URL }}
-<<<<<<< HEAD
-          # Se vazio, o código infere …/grupos/{slug}/documents/ a partir de CLASSES_URL (mesmo grupo).
-=======
-          # Nome exacto do secret no GitHub: DOCUMENTS_URL (fallbacks por nomes comuns errados)
->>>>>>> 2561ebc4c27ab13c6567ac3ee60af6a8dca7f181
+          # Secret: DOCUMENTS_URL (ou DOCUMENT_URL / DOCS_URL). Se vazio, o código infere …/grupos/{slug}/documents/ a partir de CLASSES_URL.
           DOCUMENTS_URL: ${{ secrets.DOCUMENTS_URL || secrets.DOCUMENT_URL || secrets.DOCS_URL }}
           # Garante pasta canónica (igual ao default do código)
           DOCUMENTS_OUTPUT_DIR: ${{ github.workspace }}/downloads/documents
@@ -100,8 +96,4 @@ jobs:
           else
             git commit -m "chore: dados do scraper [skip ci]"
             git push origin "$BRANCH"
-<<<<<<< HEAD
           fi
-=======
-          fi
->>>>>>> 2561ebc4c27ab13c6567ac3ee60af6a8dca7f181
