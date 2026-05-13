@@ -8,6 +8,25 @@ import { fileURLToPath } from 'url';
 
 export const BASE_ORIGIN = 'https://infnet.online';
 
+/**
+ * Infere a URL BuddyPress `…/grupos/{slug}/documents/` a partir de qualquer URL do mesmo grupo
+ * (ex. `CLASSES_URL` com `…/grupos/{slug}/infnet-ci-zoom-mettings/`).
+ * @param {string} gruposPageUrl
+ * @returns {string} href normalizado ou string vazia se o path não for reconhecido
+ */
+export function inferDocumentsUrlFromGruposUrl(gruposPageUrl) {
+  const raw = String(gruposPageUrl || '').trim();
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    const parts = u.pathname.split('/').filter(Boolean);
+    if (parts[0] !== 'grupos' || !parts[1]) return '';
+    return new URL(`/grupos/${parts[1]}/documents/`, u.origin).href;
+  } catch {
+    return '';
+  }
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** Raiz do repositório (pai de `src/`). */
 export const projectRoot = path.join(__dirname, '..', '..');

@@ -17,6 +17,7 @@ import {
   ensureAuthenticated,
   safeDirName,
   safeFileName,
+  inferDocumentsUrlFromGruposUrl,
 } from '../utils/infnetShared.mjs';
 import {
   stableDocumentItemId,
@@ -33,11 +34,60 @@ import { validateBinaryFile, safeUnlink } from '../utils/integrity.mjs';
 const DEFAULT_DOCUMENTS_URL =
   'https://infnet.online/grupos/fundamentos-do-processamento-de-dados-26e1-26e2-93422564/documents/';
 
-const DEFAULT_EXTENSIONS = new Set(['pdf', 'pptx', 'xlsx']);
+/** Extensões típicas em disciplinas Infnet/BuddyPress (antes só pdf/pptx/xlsx — .docx etc. eram ignorados). */
+const DEFAULT_EXTENSIONS = new Set([
+  'pdf',
+  'ppt',
+  'pptx',
+  'doc',
+  'docx',
+  'xls',
+  'xlsx',
+  'csv',
+  'txt',
+  'rtf',
+  'zip',
+  'rar',
+  '7z',
+  'ods',
+  'odt',
+  'odp',
+  'json',
+  'md',
+  'xml',
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'svg',
+  'epub',
+  'ipynb',
+]);
+
+/** Evita repetir o mesmo log quando `parseDocumentArgs` é chamado várias vezes no mesmo processo. */
+let loggedDocumentsUrlInference = false;
 
 /** @param {string[]} [args] */
 export function parseDocumentArgs(args = process.argv.slice(2)) {
-  let documentsUrl = process.env.DOCUMENTS_URL?.trim() || DEFAULT_DOCUMENTS_URL;
+  let documentsUrl = process.env.DOCUMENTS_URL?.trim() || '';
+  let documentsUrlFromClasses = false;
+  if (!documentsUrl) {
+    const inferred = inferDocumentsUrlFromGruposUrl(process.env.CLASSES_URL || '');
+    if (inferred) {
+      documentsUrl = inferred;
+      documentsUrlFromClasses = true;
+    } else {
+      documentsUrl = DEFAULT_DOCUMENTS_URL;
+    }
+  }
+  if (documentsUrlFromClasses && !loggedDocumentsUrlInference) {
+    loggedDocumentsUrlInference = true;
+    console.log(
+      '[DOCS] DOCUMENTS_URL não definido; a usar o mesmo grupo que CLASSES_URL →',
+      documentsUrl
+    );
+  }
   let outputDir =
     process.env.DOCUMENTS_OUTPUT_DIR?.trim() ||
     path.join(projectRoot, 'downloads', 'documents');
@@ -48,6 +98,15 @@ export function parseDocumentArgs(args = process.argv.slice(2)) {
   let ignoreManifest = envIgn === '1' || envIgn === 'true' || envIgn === 'yes';
   let maxDepth = Number(process.env.DOCUMENTS_MAX_DEPTH || 32) || 32;
   let extensions = null;
+  const envExtList = process.env.DOCUMENTS_EXTENSIONS?.trim();
+  if (envExtList) {
+    extensions = new Set(
+      envExtList
+        .split(/[,;\s]+/)
+        .map((x) => x.replace(/^\./, '').toLowerCase())
+        .filter(Boolean)
+    );
+  }
   for (const a of args) {
     if (a.startsWith('--documents-url=')) documentsUrl = a.slice('--documents-url='.length).trim();
     if (a.startsWith('--output=')) outputDir = a.slice('--output='.length).trim();
@@ -97,7 +156,13 @@ function extractListingScript() {
   const files = [];
 
   for (const row of document.querySelectorAll('.media-folder_items.ac-folder-list')) {
-    const nav = row.querySelector(`a.media-folder_name[href*="${FOLDER_PATH}"]`);
+    let nav = row.querySelector(`a.media-folder_name[href*="${FOLDER_PATH}"]`);
+    if (!nav?.href) {
+      nav = row.querySelector('a.media-folder_name[href*="documents/folders"]');
+    }
+    if (!nav?.href) {
+      nav = row.querySelector('a.media-folder_name[href*="/documents/"][href*="folder"]');
+    }
     if (!nav?.href) continue;
     const span = nav.querySelector('span');
     const label = (span?.textContent || nav.textContent || '').replace(/\s+/g, ' ').trim();
@@ -157,6 +222,36 @@ function extFromTitle(title, extHint) {
   if (m) return m[1].toLowerCase();
   if (extHint) return extHint.toLowerCase();
   return '';
+}
+
+/** Último recurso: extensão no path ou query da URL de download BuddyPress. */
+function extFromDownloadUrl(url) {
+  try {
+    const u = new URL(url);
+    const pathname = decodeURIComponent(u.pathname || '');
+    const lastSeg = pathname.split('/').filter(Boolean).pop() || '';
+    const m = lastSeg.match(/\.([a-z0-9]{1,12})$/i);
+    if (m) return m[1].toLowerCase();
+    for (const key of ['filename', 'name', 'file']) {
+      const q = u.searchParams.get(key);
+      if (q) {
+        const m2 = q.match(/\.([a-z0-9]{1,12})$/i);
+        if (m2) return m2[1].toLowerCase();
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
+
+/**
+ * @param {{ title: string; extHint: string; downloadUrl: string }} file
+ */
+function resolveDocumentFileExt(file) {
+  const fromTitle = extFromTitle(file.title, file.extHint);
+  if (fromTitle) return fromTitle;
+  return extFromDownloadUrl(file.downloadUrl);
 }
 
 async function uniqueDestPath(dir, baseName) {
@@ -304,7 +399,7 @@ async function collectDocumentTasksFromSite(page, cfg) {
     await ensureDir(baseDir);
 
     for (const file of files) {
-      const ext = extFromTitle(file.title, file.extHint);
+      const ext = resolveDocumentFileExt(file);
       if (!extensions.has(ext)) continue;
       const documentItemId = stableDocumentItemId(file.downloadUrl);
       tasks.push({
@@ -397,7 +492,7 @@ export async function runDocumentScraper(ctx, scraperOpts = {}) {
   if (scraperOpts.tasks?.length) {
     visitedSize = 0;
     for (const file of scraperOpts.tasks) {
-      const ext = file.ext || extFromTitle(file.title, file.extHint);
+      const ext = file.ext || resolveDocumentFileExt(file);
       if (!extensions.has(ext)) {
         skipped++;
         continue;
@@ -544,7 +639,7 @@ export async function runDocumentScraper(ctx, scraperOpts = {}) {
       await ensureDir(baseDir);
 
       for (const file of files) {
-        const ext = extFromTitle(file.title, file.extHint);
+        const ext = resolveDocumentFileExt(file);
         if (!extensions.has(ext)) {
           skipped++;
           continue;
