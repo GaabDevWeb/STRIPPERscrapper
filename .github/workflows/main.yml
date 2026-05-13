@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+# ISS_REPO_TOKEN: o push é para https://github.com/GaabDevWeb/ISS — o PAT tem de ter permissão
+# de escrita nesse repo (fine-grained: "Contents" read/write no ISS; classic: scope repo + acesso ao ISS).
+# Admin apenas no STRIPPERscrapper não concede push ao ISS (são repositórios diferentes).
+
 jobs:
   run-scrapper:
     runs-on: ubuntu-latest
@@ -41,8 +45,11 @@ jobs:
       - name: Install Chrome for Puppeteer
         run: npx puppeteer browsers install chrome
 
-      - name: Execute scrapper
-        run: node main.js --all --sequential
+      # Dois passos: documentos correm mesmo se aulas falharem (sem depender de fail-fast interno).
+      - name: Scraper — aulas
+        id: scraper_lessons
+        continue-on-error: true
+        run: node main.js --lessons --sequential
         env:
           CI: 'true'
           HEADLESS: 'true'
@@ -50,6 +57,29 @@ jobs:
           FACULDADE_PASS: ${{ secrets.FACULDADE_PASS }}
           CLASSES_URL: ${{ secrets.CLASSES_URL }}
           DOCUMENTS_URL: ${{ secrets.DOCUMENTS_URL }}
+
+      - name: Scraper — documentos
+        id: scraper_docs
+        continue-on-error: true
+        run: node main.js --docs --sequential
+        env:
+          CI: 'true'
+          HEADLESS: 'true'
+          FACULDADE_USER: ${{ secrets.FACULDADE_USER || secrets.USER_LOGIN }}
+          FACULDADE_PASS: ${{ secrets.FACULDADE_PASS }}
+          CLASSES_URL: ${{ secrets.CLASSES_URL }}
+          DOCUMENTS_URL: ${{ secrets.DOCUMENTS_URL }}
+
+      - name: Scraper — veredito (aulas e/ou documentos)
+        if: always()
+        run: |
+          if [ "${{ steps.scraper_lessons.outcome }}" = "failure" ] && [ "${{ steps.scraper_docs.outcome }}" = "failure" ]; then
+            echo "::error::Aulas e documentos falharam — ver logs dos passos anteriores."
+            exit 1
+          fi
+          if [ "${{ steps.scraper_docs.outcome }}" = "failure" ]; then
+            echo "::warning::Módulo documentos falhou — pode não haver downloads/documents/ para commit."
+          fi
 
       - name: Resumo da pasta downloads (diagnóstico)
         if: always()
@@ -63,7 +93,10 @@ jobs:
             echo "(pasta downloads ausente)"
           fi
 
+      # Com push para outro repo, o passo anterior pode ter falhado parcialmente; ainda assim
+      # sincronizamos o que existir em downloads/ (rsync + commit no ISS).
       - name: Commit downloads to ISS repo
+        if: always()
         env:
           ISS_TOKEN: ${{ secrets.ISS_REPO_TOKEN }}
         run: |
