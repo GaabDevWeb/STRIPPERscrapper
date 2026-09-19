@@ -2,11 +2,14 @@ name: Stripper Scrapper
 on:
   workflow_dispatch:
   # GitHub usa UTC. 09:00 UTC = 06:00 em Brasília (UTC−3, sem horário de verão).
+  # Aulas: seg–sex 20:30–22:00; às 06:00 as transcrições do Zoom já estão no Drive.
   schedule:
     - cron: '0 9 * * *'
-# Só leitura neste repo; o push dos dados usa PAT noutro repositório.
+# contents: read — o push dos dados usa PAT noutro repositório.
+# actions: write — keepalive reativa o schedule (GitHub desliga crons após 60 dias sem commits).
 permissions:
   contents: read
+  actions: write
 jobs:
   run-scrapper:
     runs-on: ubuntu-latest
@@ -38,6 +41,23 @@ jobs:
       - name: Install Chrome for Puppeteer
         run: npx puppeteer browsers install chrome
 
+      # wp-login.php está atrás do Cloudflare Managed Challenge (desde maio/2026): o runner nunca consegue
+      # fazer login. O resto do portal não está — por isso reutilizamos uma sessão criada por um humano
+      # (README → "Sessão e Cloudflare"). O ficheiro vive no secret INFNET_SESSION_B64 (session.json em base64).
+      - name: Restore session.json from secret
+        env:
+          INFNET_SESSION_B64: ${{ secrets.INFNET_SESSION_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INFNET_SESSION_B64:-}" ]; then
+            echo "::warning::Secret INFNET_SESSION_B64 ausente — o login direto vai bater no Cloudflare. Ver README → 'Sessão e Cloudflare'."
+            exit 0
+          fi
+          printf '%s' "$INFNET_SESSION_B64" | base64 -d > session.json
+          node -e "const s=require('./session.json'); if(!Array.isArray(s.cookies)||!s.cookies.length) throw new Error('session.json sem cookies')"
+          sha256sum session.json | cut -c1-16 > .session.sha
+          echo "session.json restaurado ($(wc -c < session.json) bytes)"
+
       # Duas invocações ao Node (processos e browsers distintos): evita uma sessão longa aulas+docs e falhas silenciosas em documentos no CI.
       - name: Execute scrapper (aulas)
         run: node main.js --lessons --sequential
@@ -65,14 +85,43 @@ jobs:
           DOCUMENTS_URL: ${{ secrets.DOCUMENTS_URL || secrets.DOCUMENT_URL || secrets.DOCS_URL }}
           DOCUMENTS_OUTPUT_DIR: ${{ github.workspace }}/downloads/documents
 
-      - name: Resumo de downloads (debug)
+      # Cookies renovados pelo portal voltam para o secret, senão a sessão "envelhece" a cada run.
+      # Precisa de PAT com permissão de escrita em secrets deste repo (fine-grained: "Secrets: write";
+      # classic: scope "repo"). GITHUB_TOKEN não pode escrever secrets.
+      - name: Persist refreshed session.json to secret
+        if: success() || failure()
+        env:
+          GH_TOKEN: ${{ secrets.SESSION_SECRET_PAT || secrets.ISS_REPO_TOKEN || secrets.DOWNLOADS_REPO_TOKEN || secrets.ISS_WORFLOW_PAT }}
+        run: |
+          set -euo pipefail
+          [ -f session.json ] || { echo "sem session.json para persistir"; exit 0; }
+          NEW="$(sha256sum session.json | cut -c1-16)"
+          OLD="$(cat .session.sha 2>/dev/null || true)"
+          if [ "$NEW" = "$OLD" ]; then echo "session.json inalterado"; exit 0; fi
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::Sem PAT para atualizar INFNET_SESSION_B64 — a sessão não será renovada automaticamente."
+            exit 0
+          fi
+          base64 -w0 session.json | gh secret set INFNET_SESSION_B64 --repo "$GITHUB_REPOSITORY"
+          echo "INFNET_SESSION_B64 atualizado"
 
+      - name: Resumo de downloads (debug)
         if: success() || failure()
         run: |
           echo "=== downloads/ (nível superior) ==="
           ls -la downloads 2>/dev/null || echo "(inexistente)"
           echo "=== downloads/documents/ (BuddyPress) ==="
           ls -la downloads/documents 2>/dev/null || echo "(ainda sem documents — ver log do scraper e DOCUMENTS_URL)"
+
+      # Screenshot + HTML do que o portal devolveu quando o login falhou (ver src/utils/infnetShared.mjs → dumpDiagnostics).
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics
+          path: diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Push downloads to data repository
         if: success() || failure()
@@ -109,3 +158,25 @@ jobs:
             git commit -m "chore: dados do scraper [skip ci]"
             git push origin "$BRANCH"
           fi
+
+      # Falhou 2 meses seguidos sem ninguém reparar (mai–jul/2026). Opcional: secret DISCORD_WEBHOOK_URL.
+      - name: Notify Discord on failure
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -n "${WEBHOOK:-}" ] || { echo "DISCORD_WEBHOOK_URL ausente — sem notificação"; exit 0; }
+          MSG="⚠️ **Stripper Scrapper falhou** (${{ github.event_name }}). Se o log disser *Cloudflare*, a sessão expirou: refazer login visível e atualizar INFNET_SESSION_B64. ${RUN_URL}"
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            -d "$(node -e 'console.log(JSON.stringify({content: process.argv[1]}))' "$MSG")" "$WEBHOOK" || true
+
+      # GitHub desativa workflows agendados após 60 dias sem commits (foi o que aconteceu em jul/2026).
+      # Reativar via API a cada run conta como atividade e evita o desligamento. Usa o GITHUB_TOKEN (actions: write).
+      - name: Keepalive (re-enable schedule)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/main.yml/enable" \
+            && echo "workflow mantido ativo" || echo "::warning::não foi possível reativar o workflow"
