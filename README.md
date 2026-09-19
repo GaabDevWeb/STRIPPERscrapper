@@ -25,6 +25,7 @@ Não existe servidor HTTP nem API exposta: tudo corre na máquina do utilizador.
 - [Saídas no disco e idempotência](#saídas-no-disco-e-idempotência)
 - [Resiliência (retries, integridade, DLQ)](#resiliência-retries-integridade-dlq)
 - [API programática (`toMarkdown`)](#api-programática-tomarkdown)
+- [Sessão e Cloudflare](#sessão-e-cloudflare)
 - [Segurança e conformidade](#segurança-e-conformidade)
 - [Troubleshooting](#troubleshooting)
 - [Manutenção e documentação](#manutenção-e-documentação)
@@ -247,6 +248,38 @@ await toMarkdown('/caminho/para/ficheiro.vtt', {
 });
 ```
 
+## Sessão e Cloudflare
+
+Desde maio/2026 o `wp-login.php` do portal está atrás do **Cloudflare Managed Challenge** ("Just a moment…"). Só a página de login é protegida; grupos, documentos e Drive não são. Consequência: o login automático **não funciona** (nem local em headless, nem no GitHub Actions), mas uma sessão já autenticada continua a funcionar normalmente.
+
+O fluxo passa a ser: **um humano faz login uma vez**, o scraper guarda os cookies em `session.json` e reutiliza-os até expirarem. O login marca "Lembrar-me", por isso a sessão vale **14 dias**.
+
+### Semear a sessão (local)
+
+```bash
+npm start -- --lessons --headed --limit=1
+```
+
+O browser abre visível; faz login normalmente (resolve o desafio se aparecer). No fim, `session.json` está na raiz do projeto. O log mostra a data de expiração em cada execução (`[SESSÃO] session.json expira em …`).
+
+### Usar a sessão no GitHub Actions
+
+1. Converter para base64 e guardar como secret **`INFNET_SESSION_B64`** (Settings → Secrets and variables → Actions):
+
+   ```bash
+   base64 -w0 session.json | gh secret set INFNET_SESSION_B64 --repo GaabDevWeb/STRIPPERscrapper
+   # macOS: base64 -i session.json | tr -d '\n' | gh secret set INFNET_SESSION_B64 --repo GaabDevWeb/STRIPPERscrapper
+   ```
+
+2. (Opcional) Secret **`SESSION_SECRET_PAT`** — PAT com permissão *Secrets: write* neste repo. Com ele, o workflow regrava o secret com os cookies renovados no fim de cada run. Sem ele, funciona na mesma, mas a sessão só é renovada quando alguém repete o passo 1. O `ISS_REPO_TOKEN` (classic, scope `repo`) também serve.
+
+3. (Opcional) Secret **`DISCORD_WEBHOOK_URL`** — aviso quando o workflow falhar.
+
+### Quando renova
+
+- O log avisa (`::warning::`) quando faltam ≤3 dias.
+- Se o portal rejeitar a sessão, o run falha com mensagem explícita sobre Cloudflare e publica screenshot + HTML em `diagnostics/` (artifact `diagnostics` no Actions). Repetir o passo 1.
+
 ## Segurança e conformidade
 
 - Credenciais apenas em `.env` local; não commitar `.env` nem `session.json`.
@@ -274,7 +307,13 @@ UI do Drive varia (iframe, idioma). O código percorre frames e vários rótulos
 </details>
 
 <details>
-<summary>Login falha com credenciais corretas</summary>
+<summary>Login falha: "wp-login.php protegido por Cloudflare" ou "Campos de login não encontrados"</summary>
+
+O portal serve um desafio Cloudflare em vez do formulário. Ver [Sessão e Cloudflare](#sessão-e-cloudflare): fazer login com `--headed` e reutilizar o `session.json` (no CI, secret `INFNET_SESSION_B64`). O que o portal devolveu fica em `diagnostics/`.
+</details>
+
+<details>
+<summary>Login falha com credenciais corretas (sem Cloudflare)</summary>
 
 MFA ou captchas não tratados pelo script. Apagar `session.json` e tentar com `--headed`.
 </details>

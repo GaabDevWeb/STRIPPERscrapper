@@ -213,6 +213,59 @@ export async function findFirst(page, selectors) {
   return null;
 }
 
+/**
+ * Pasta onde ficam screenshot + HTML quando a autenticação falha (`DIAG_DIR`, default `diagnostics/`).
+ * No CI é publicada como artifact para se perceber *o que* o portal devolveu.
+ */
+export const diagnosticsDir = process.env.DIAG_DIR || path.join(projectRoot, 'diagnostics');
+
+/**
+ * `wp-login.php` está atrás do Managed Challenge do Cloudflare desde maio/2026 ("Just a moment…").
+ * O resto do portal (grupos, documentos, Drive) não está — logo uma sessão válida nunca vê o desafio.
+ * Detectar cedo evita o erro genérico "Campos de login não encontrados".
+ */
+export async function isCloudflareChallenge(page) {
+  return page
+    .evaluate(() => {
+      const title = (document.title || '').toLowerCase();
+      return (
+        title.includes('just a moment') ||
+        title.includes('um momento') ||
+        !!document.querySelector('#challenge-form, #challenge-running, #cf-challenge-running, .cf-turnstile')
+      );
+    })
+    .catch(() => false);
+}
+
+/**
+ * Grava `diagnostics/<label>-<timestamp>.{png,html}` com o estado atual da página.
+ * Nunca lança: diagnóstico não pode mascarar o erro original.
+ */
+export async function dumpDiagnostics(page, label) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const base = path.join(diagnosticsDir, `${safeFileName(label)}-${stamp}`);
+  try {
+    await fs.mkdir(diagnosticsDir, { recursive: true });
+    await page.screenshot({ path: `${base}.png`, fullPage: true }).catch(() => {});
+    const html = await page.content().catch(() => '');
+    if (html) await fs.writeFile(`${base}.html`, html, 'utf8');
+    console.log(`[DIAG] url=${page.url()} → ${base}.{png,html}`);
+  } catch (e) {
+    console.log(`[DIAG] falhou a gravar diagnóstico: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * Expiração (Date) do cookie `wordpress_logged_in_*`, ou `null` se for cookie de sessão
+ * (login sem "Lembrar-me": o token vale 2 dias no servidor, mas o cookie não tem `expires`).
+ * @param {Array<{ name: string; expires?: number }>} cookies
+ */
+export function sessionExpiry(cookies) {
+  const c = (cookies || []).find((k) => k.name?.startsWith('wordpress_logged_in_'));
+  if (!c || !c.expires || c.expires <= 0) return null;
+  return new Date(c.expires * 1000);
+}
+
 export async function login(page, user, pass) {
   const userSelectors = [
     'input#user_login',
@@ -225,6 +278,15 @@ export async function login(page, user, pass) {
   const userEl = await findFirst(page, userSelectors);
   const passEl = await findFirst(page, passSelectors);
   if (!userEl || !passEl) {
+    if (await isCloudflareChallenge(page)) {
+      await dumpDiagnostics(page, 'cloudflare-challenge');
+      throw new Error(
+        '[LOGIN] wp-login.php protegido por Cloudflare (Managed Challenge) — automação não consegue autenticar. ' +
+          'Solução: fazer login uma vez num browser visível (`npm start -- --lessons --headed --limit=1`) ' +
+          'e reutilizar o session.json gerado (no CI: secret INFNET_SESSION_B64). Ver README → "Sessão e Cloudflare".',
+      );
+    }
+    await dumpDiagnostics(page, 'login-fields-missing');
     throw new Error('Campos de login não encontrados');
   }
 
@@ -232,6 +294,13 @@ export async function login(page, user, pass) {
   await userEl.type(user, { delay: 12 });
   await passEl.click({ clickCount: 3 });
   await passEl.type(pass, { delay: 12 });
+
+  // "Lembrar-me": cookie de 14 dias em vez de 2 — é o que permite reutilizar a sessão entre execuções.
+  const remember = await page.$('input#rememberme, input[name="rememberme"]');
+  if (remember) {
+    const checked = await remember.evaluate((el) => /** @type {HTMLInputElement} */ (el).checked);
+    if (!checked) await remember.click();
+  }
 
   const submit =
     (await page.$('input#wp-submit')) ||
@@ -272,11 +341,22 @@ export async function ensureAuthenticated(page, targetUrl, sessionPath, user, pa
   const session = await loadSession(sessionPath);
   if (session) {
     await applySession(page, session);
+    const exp = sessionExpiry(session.cookies);
+    if (exp) {
+      const days = Math.round((exp.getTime() - Date.now()) / 86_400_000);
+      console.log(`[SESSÃO] session.json expira em ${exp.toISOString().slice(0, 10)} (${days} dia(s))`);
+      if (days <= 3) {
+        console.log('::warning::[SESSÃO] expira em ≤3 dias — renovar com login visível (README → "Sessão e Cloudflare")');
+      }
+    } else {
+      console.log('[SESSÃO] session.json sem expiração declarada (login sem "Lembrar-me"?)');
+    }
   }
 
   await gotoUrl(page, targetUrl, settleMs);
 
   if (page.url().includes('wp-login.php')) {
+    if (session) console.log('::warning::[SESSÃO] session.json rejeitado pelo portal — expirado ou revogado');
     if (!user || !pass) {
       throw new Error('FACULDADE_USER / FACULDADE_PASS ausentes (.env)');
     }
@@ -284,12 +364,14 @@ export async function ensureAuthenticated(page, targetUrl, sessionPath, user, pa
     await login(page, user, pass);
     await gotoUrl(page, targetUrl, settleMs);
     if (page.url().includes('wp-login.php')) {
+      await dumpDiagnostics(page, 'login-rejected');
       throw new Error('[LOGIN] Falha: ainda na tela de login');
     }
     console.log('[LOGIN] Sucesso');
     await saveSession(page, sessionPath);
   } else {
     console.log('[LOGIN] Sessão válida');
-    if (!session) await saveSession(page, sessionPath);
+    // Regrava sempre: o portal pode ter renovado cookies e o CI reexporta o ficheiro para o secret.
+    await saveSession(page, sessionPath);
   }
 }
