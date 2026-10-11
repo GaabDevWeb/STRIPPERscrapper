@@ -1,0 +1,162 @@
+:root {
+  --bg: #f6f7f9;
+  --fg: #1a1d23;
+  --muted: #5c6570;
+  --line: #d5dae2;
+  --accent: #0b5fff;
+  --warn: #8a4b00;
+  --warn-bg: #fff6e5;
+  --danger: #b42318;
+  --ok: #067647;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 360px;
+  max-height: 560px;
+  overflow: auto;
+  font: 13px/1.4 "Segoe UI", system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  padding: 10px;
+}
+
+header {
+  margin-bottom: 8px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.sub {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.row.between {
+  justify-content: space-between;
+  margin-top: 0;
+}
+
+label {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  margin-top: 4px;
+}
+
+input[type="url"],
+input[type="password"],
+input[type="text"],
+select {
+  width: 100%;
+  margin-top: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
+  color: var(--fg);
+  background: #fff;
+}
+
+button {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+}
+
+button.ghost {
+  background: #fff;
+  color: var(--accent);
+}
+
+button.primary {
+  width: 100%;
+  margin-top: 8px;
+}
+
+button.danger {
+  background: #fff;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.status {
+  margin: 6px 0 0;
+  font-weight: 600;
+}
+
+.status.AUTHENTICATED { color: var(--ok); }
+.status.NOT_AUTHENTICATED,
+.status.SESSION_EXPIRED { color: var(--danger); }
+.status.AUTHENTICATING { color: var(--warn); }
+.status.ERROR { color: var(--danger); }
+
+.muted {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  word-break: break-word;
+}
+
+.warn {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.hidden {
+  display: none;
+}
+
+.progress {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.actions button {
+  width: 100%;
+}

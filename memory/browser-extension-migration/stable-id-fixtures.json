@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "description": "Golden vectors for stable ID parity (stableIds.mjs)",
+  "vectors": [
+    {
+      "name": "gdrv_file_d",
+      "url": "https://drive.google.com/file/d/1AbC_dEfGhIjKlMnOpQrStUvWxYz01234/view?usp=sharing",
+      "normalizeUrlForId": "https://drive.google.com/file/d/1AbC_dEfGhIjKlMnOpQrStUvWxYz01234/view?usp=sharing",
+      "extractGoogleDriveFileId": "1AbC_dEfGhIjKlMnOpQrStUvWxYz01234",
+      "extractBuddyPressDocumentId": null,
+      "stableTranscriptItemId": "transcript:gdrv:1AbC_dEfGhIjKlMnOpQrStUvWxYz01234",
+      "stableDocumentItemId": "document:url:6127bbde126a8be73c4b3dc1160cb0b2e82578bec6a4ab8f",
+      "primaryId": "transcript:gdrv:1AbC_dEfGhIjKlMnOpQrStUvWxYz01234"
+    },
+    {
+      "name": "gdrv_open_id",
+      "url": "https://drive.google.com/open?id=1AbC_dEfGhIjKlMnOpQrStUvWxYz01234",
+      "normalizeUrlForId": "https://drive.google.com/open?id=1AbC_dEfGhIjKlMnOpQrStUvWxYz01234",
+      "extractGoogleDriveFileId": "1AbC_dEfGhIjKlMnOpQrStUvWxYz01234",
+      "extractBuddyPressDocumentId": null,
+      "stableTranscriptItemId": "transcript:gdrv:1AbC_dEfGhIjKlMnOpQrStUvWxYz01234",
+      "stableDocumentItemId": "document:url:a410f958ff9c22cbc93c6537d2b2a5e50c80352129a0db1c",
+      "primaryId": "transcript:gdrv:1AbC_dEfGhIjKlMnOpQrStUvWxYz01234"
+    },
+    {
+      "name": "gdrv_uc_id",
+      "url": "https://drive.google.com/uc?id=1AbC_dEfGhIjKlMnOpQrStUvWxYz01234&export=download",
+      "normalizeUrlForId": "https://drive.google.com/uc?id=1AbC_dEfGhIjKlMnOpQrStUvWxYz01234&export=download",
+      "extractGoogleDriveFileId": "1AbC_dEfGhIjKlMnOpQrStUvWxYz01234",
+      "extractBuddyPressDocumentId": null,
+      "stableTranscriptItemId": "transcript:gdrv:1AbC_dEfGhIjKlMnOpQrStUvWxYz01234",
+      "stableDocumentItemId": "document:url:867caf1d52badf951bab408540cfa354617b7c1516e19b37",
+      "primaryId": "transcript:gdrv:1AbC_dEfGhIjKlMnOpQrStUvWxYz01234"
+    },
+    {
+      "name": "gdoc",
+      "url": "https://docs.google.com/document/d/1docIdXYZ/edit",
+      "normalizeUrlForId": "https://docs.google.com/document/d/1docIdXYZ/edit",
+      "extractGoogleDriveFileId": "1docIdXYZ",
+      "extractBuddyPressDocumentId": null,
+      "stableTranscriptItemId": "transcript:gdrv:1docIdXYZ",
+      "stableDocumentItemId": "document:url:97185013e488fd49bc0408317dae209566a93ddbd835355c",
+      "primaryId": "transcript:gdrv:1docIdXYZ"
+    },
+    {
+      "name": "gsheet",
+      "url": "https://docs.google.com/spreadsheets/d/1sheetIdXYZ/edit#gid=0",
+      "normalizeUrlForId": "https://docs.google.com/spreadsheets/d/1sheetIdXYZ/edit",
+      "extractGoogleDriveFileId": "1sheetIdXYZ",
+      "extractBuddyPressDocumentId": null,
+      "stableTranscriptItemId": "transcript:gdrv:1sheetIdXYZ",
+      "stableDocumentItemId": "document:url:ec7c908c6c6b3c16ddf95d3416f193db1d6e8cfeb2859a1b",
+      "primaryId": "transcript:gdrv:1sheetIdXYZ"
+    },
+    {
+      "name": "gpresent",
+      "url": "https://docs.google.com/presentation/d/1presIdXYZ/edit",
+      "normalizeUrlForId": "https://docs.google.com/presentation/d/1presIdXYZ/edit",
+      "extractGoogleDriveFileId": "1presIdXYZ",
+      "extractBuddyPressDocumentId": null,
+      "stableTranscriptItemId": "transcript:gdrv:1presIdXYZ",
+      "stableDocumentItemId": "document:url:d05f46f4b92e6793bb64f43cc7d04c4b56638aa836cb1fd3",
+      "primaryId": "transcript:gdrv:1presIdXYZ"
+    },
+    {
+      "name": "transcript_url_fallback",
+      "url": "https://example.com/transcript?x=1#frag",
+      "normalizeUrlForId": "https://example.com/transcript?x=1",
+      "extractGoogleDriveFileId": null,
+      "extractBuddyPressDocumentId": null,
+      "stableTranscriptItemId": "transcript:url:bf1f93c4c534a4204839b6509c4cfd3ad79f402ab91535a9",
+      "stableDocumentItemId": "document:url:bf1f93c4c534a4204839b6509c4cfd3ad79f402ab91535a9",
+      "primaryId": "transcript:url:bf1f93c4c534a4204839b6509c4cfd3ad79f402ab91535a9"
+    },
+    {
+      "name": "bp_query_document_id",
+      "url": "https://infnet.online/grupos/x/documents/?document_id=12345",
+      "normalizeUrlForId": "https://infnet.online/grupos/x/documents/?document_id=12345",
+      "extractGoogleDriveFileId": null,
+      "extractBuddyPressDocumentId": "12345",
+      "stableTranscriptItemId": "transcript:url:d888e7d1de4736153811f43a8cf826ffbfcc221173a29114",
+      "stableDocumentItemId": "document:bp:12345",
+      "primaryId": "document:bp:12345"
+    },
+    {
+      "name": "bp_query_document-id",
+      "url": "https://infnet.online/?document-id=99",
+      "normalizeUrlForId": "https://infnet.online/?document-id=99",
+      "extractGoogleDriveFileId": null,
+      "extractBuddyPressDocumentId": "99",
+      "stableTranscriptItemId": "transcript:url:e6fdcbbb3000a91d6f3a7572a3a79c94c7da1de577a5eb42",
+      "stableDocumentItemId": "document:bp:99",
+      "primaryId": "document:bp:99"
+    },
+    {
+      "name": "bp_path_documents",
+      "url": "https://infnet.online/documents/555/download/",
+      "normalizeUrlForId": "https://infnet.online/documents/555/download/",
+      "extractGoogleDriveFileId": null,
+      "extractBuddyPressDocumentId": "555",
+      "stableTranscriptItemId": "transcript:url:b9051fad1c0ba95d3746332b0b30372a1096891e753d37b2",
+      "stableDocumentItemId": "document:bp:555",
+      "primaryId": "document:bp:555"
+    },
+    {
+      "name": "bp_path_document",
+      "url": "https://infnet.online/document/777",
+      "normalizeUrlForId": "https://infnet.online/document/777",
+      "extractGoogleDriveFileId": null,
+      "extractBuddyPressDocumentId": "777",
+      "stableTranscriptItemId": "transcript:url:f75cbf333e35ffd775c58fc32b70028891022d9ac2093a17",
+      "stableDocumentItemId": "document:bp:777",
+      "primaryId": "document:bp:777"
+    },
+    {
+      "name": "document_url_fallback",
+      "url": "https://cdn.example.com/files/slides.pptx?v=2#x",
+      "normalizeUrlForId": "https://cdn.example.com/files/slides.pptx?v=2",
+      "extractGoogleDriveFileId": null,
+      "extractBuddyPressDocumentId": null,
+      "stableTranscriptItemId": "transcript:url:87bf416b76106d9fdf94afc95b3ca3314e0b95e72e4219ad",
+      "stableDocumentItemId": "document:url:87bf416b76106d9fdf94afc95b3ca3314e0b95e72e4219ad",
+      "primaryId": "document:url:87bf416b76106d9fdf94afc95b3ca3314e0b95e72e4219ad"
+    }
+  ]
+}

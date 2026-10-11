@@ -4,19 +4,23 @@
 
 # StripperScrapper
 
-> Ferramenta **local** (Node.js + Puppeteer) que automatiza, para um utilizador autenticado no portal **Infnet** (`infnet.online`, WordPress), a extração de **transcrições de aulas** (via Google Drive) e de **documentos BuddyPress**, com cópia organizada no disco e metadados em Markdown onde aplicável.
+> Ferramenta **local** para extrair, com sessão autenticada no portal **Infnet** (`infnet.online`), **transcrições de aulas** (Google Drive) e **documentos BuddyPress**, com cópia organizada no disco e Markdown com front-matter.
+
+**Path recomendado (CAPTCHA):** [Browser Extension + Core Bridge](#path-recomendado--browser-extension--captcha) — login/CAPTCHA manual no Chrome; core Node processa artefactos.  
+**Path legado:** CLI Puppeteer (`npm start`) — ver [Quick start (legado Puppeteer)](#quick-start-legado-puppeteer).
 
 <p align="left">
-  <img src="./assets/logs.gif" alt="StripperScrapper — dashboard TUI com vários workers a processar aulas e logs" width="680" />
+    <img src="./assets/logs.gif" alt="StripperScrapper — dashboard TUI com vários workers a processar aulas e logs" width="680" />
 </p>
 
-Não existe servidor HTTP nem API exposta: tudo corre na máquina do utilizador. A referência técnica completa está em [`documentation.md`](./documentation.md).
+Guia operacional da extensão: [`docs/EXTENSION_OPERATOR.md`](./docs/EXTENSION_OPERATOR.md). Referência técnica longa: [`documentation.md`](./documentation.md). Arquitectura pós-migração: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 
 ## Table of Contents
 
 - [Propósito e âmbito](#propósito-e-âmbito)
 - [O que faz (e o que não faz)](#o-que-faz-e-o-que-não-faz)
-- [Quick start](#quick-start)
+- [Path recomendado — Browser Extension (CAPTCHA)](#path-recomendado--browser-extension--captcha)
+- [Quick start (legado Puppeteer)](#quick-start-legado-puppeteer)
 - [Comandos e orquestrador](#comandos-e-orquestrador)
 - [Modo cluster / multi-worker](#modo-cluster--multi-worker)
 - [Variáveis de ambiente](#variáveis-de-ambiente)
@@ -35,7 +39,7 @@ Não existe servidor HTTP nem API exposta: tudo corre na máquina do utilizador.
 | Aspeto | Descrição |
 |--------|-----------|
 | **Problema** | Conteúdos ficam atrás de login e de UI web (Drive, listagens BuddyPress), sem endpoint público estável. |
-| **Solução** | Replicar o fluxo humano com browser controlado; transcrições com CDP + rename + `.md`; documentos com `fetch` autenticado no Node. |
+| **Solução** | **Extensão MV3** na sessão do browser (CAPTCHA manual) + **core bridge** local (`npm run core`) para validação, Markdown e manifest. Alternativa legada: Puppeteer CLI. |
 | **Quem usa** | Quem tem **acesso legítimo** ao conteúdo e pretende **cópia local** organizada. |
 
 O nome do repositório é um jogo de palavras com “strip” (extração) e “scraper”; o âmbito é **extração autorizada** para uso pessoal/académico.
@@ -58,7 +62,33 @@ O nome do repositório é um jogo de palavras com “strip” (extração) e “
 - Não garante compatibilidade eterna com alterações de HTML nos sites.
 - Não substitui políticas da instituição ou termos de serviço — o utilizador é responsável pelo uso conforme contratos e leis aplicáveis.
 
-## Quick start
+## Path recomendado — Browser Extension (CAPTCHA)
+
+Quando o login Infnet mostra CAPTCHA, **não** automatizar o bypass: usar a extensão.
+
+```bash
+npm install
+# .env: STRIPPER_DOWNLOADS_DIR=/home/gaab/Documentos/GitHub/ISS/downloads
+npm run core          # http://127.0.0.1:8787 — token em .bridge-token
+npm test              # suite do bridge (opcional)
+```
+
+1. Chrome → `chrome://extensions` → Load unpacked → pasta `extension/`
+2. Login manual em `infnet.online` (CAPTCHA incluído)
+3. Popup: colar token de `.bridge-token` → Health → Discover / Download
+
+Saída final materializa em `STRIPPER_DOWNLOADS_DIR` (por defeito o `downloads/` deste repo; neste setup → `…/ISS/downloads`). Inbox Chrome: `~/Downloads/StripperScrapper/`.
+
+Detalhe, checklist E2E e recuperação de sessão: [`docs/EXTENSION_OPERATOR.md`](./docs/EXTENSION_OPERATOR.md).
+
+| npm | Papel |
+|-----|--------|
+| `npm run core` | Core bridge HTTP (loopback) |
+| `npm test` | Testes unitários/integração do bridge |
+
+`session.json` **não** é necessário neste path (a sessão é a do browser).
+
+## Quick start (legado Puppeteer)
 
 1. Copiar o exemplo de ambiente e editar credenciais / URLs:
 

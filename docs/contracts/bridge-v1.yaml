@@ -1,0 +1,382 @@
+openapi: 3.0.3
+info:
+  title: StripperScrapper Core Bridge
+  version: "1.0.0"
+  description: |
+    HTTP local bridge (127.0.0.1) between Browser Extension and Scraper Core.
+    Auth: header X-Stripper-Token (local bridge token — NOT Infnet credentials).
+    SSOT narrative: docs/API_SPEC.md
+servers:
+  - url: http://127.0.0.1:{port}
+    variables:
+      port:
+        default: "8787"
+x-bind: "127.0.0.1"
+x-errorKind:
+  enum:
+    - network
+    - timeout
+    - http
+    - integrity
+    - html
+    - session_expired
+    - cancelled
+    - unknown
+  description: Typed artifact/job error kinds. session_expired pauses run (paused_auth); no infinite retry.
+x-auth-notes: |
+  Bridge token is generated at core start and written to .bridge-token (gitignored).
+  Extension path MUST NOT require session.json (ADR-0002).
+components:
+  securitySchemes:
+    StripperToken:
+      type: apiKey
+      in: header
+      name: X-Stripper-Token
+  schemas:
+    ErrorKind:
+      type: string
+      enum:
+        - network
+        - timeout
+        - http
+        - integrity
+        - html
+        - session_expired
+        - cancelled
+        - unknown
+    HealthResponse:
+      type: object
+      required: [ok, version, manifestPath]
+      properties:
+        ok: { type: boolean }
+        version: { type: integer }
+        manifestPath: { type: string }
+    AuthBridgeResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        error: { type: string }
+    DiscoveryCounts:
+      type: object
+      required: [ok, total, pending, completed, error]
+      properties:
+        ok: { type: boolean }
+        total: { type: integer }
+        pending: { type: integer }
+        completed: { type: integer }
+        error: { type: integer }
+    LessonTask:
+      type: object
+      required: [type, id, source_url]
+      properties:
+        type: { type: string, enum: [lesson] }
+        domIndex: { type: integer }
+        title: { type: string }
+        source_url: { type: string }
+        download_url: { type: string }
+        id: { type: string, description: "transcript:gdrv:<id> | transcript:url:<sha48>" }
+        course: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+          properties:
+            accordionTitle: { type: string }
+            section: { type: string }
+    DocumentTask:
+      type: object
+      required: [type, id, source_url]
+      properties:
+        type: { type: string, enum: [document] }
+        id: { type: string, description: "document:bp:<id> | document:url:<sha48>" }
+        path: { type: string }
+        filename: { type: string }
+        extension: { type: string }
+        source_url: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+          properties:
+            relParts:
+              type: array
+              items: { type: string }
+            listUrl: { type: string }
+    LessonDiscoveryRequest:
+      type: object
+      required: [tasks]
+      properties:
+        classesUrl: { type: string }
+        courseName: { type: string }
+        discoveredAt: { type: string, format: date-time }
+        tasks:
+          type: array
+          items: { $ref: "#/components/schemas/LessonTask" }
+    DocumentDiscoveryRequest:
+      type: object
+      required: [tasks]
+      properties:
+        documentsUrl: { type: string }
+        discoveredAt: { type: string, format: date-time }
+        tasks:
+          type: array
+          items: { $ref: "#/components/schemas/DocumentTask" }
+    JobStartRequest:
+      type: object
+      properties:
+        scope:
+          type: string
+          enum: [lessons, docs, all]
+          default: all
+        mode:
+          type: string
+          enum: [discover_only, discover_and_download]
+          default: discover_and_download
+        ignoreManifest: { type: boolean, default: false }
+        failFast: { type: boolean, default: false }
+        limit:
+          nullable: true
+          type: integer
+    JobStartResponse:
+      type: object
+      required: [ok, runId, queued]
+      properties:
+        ok: { type: boolean }
+        runId: { type: string }
+        queued: { type: integer }
+    JobStatusResponse:
+      type: object
+      required: [runId, status, progress]
+      properties:
+        runId: { type: string }
+        status:
+          type: string
+          enum: [running, paused_auth, cancelled, completed, failed]
+        progress:
+          type: object
+          properties:
+            completed: { type: integer }
+            skipped: { type: integer }
+            failed: { type: integer }
+            dlq: { type: integer }
+            pending: { type: integer }
+        nextTasks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    ArtifactIngestRequest:
+      type: object
+      required: [id, type, localPath]
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [lesson, document] }
+        localPath: { type: string, description: "Absolute path from chrome.downloads (preferred v1)" }
+        source_url: { type: string }
+        course: { type: string }
+        title: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        attempt: { type: integer }
+    ArtifactIngestResponse:
+      type: object
+      properties:
+        ok: { type: boolean }
+        result:
+          type: string
+          enum: [completed, skipped, error]
+        artifactRelPath: { type: string, nullable: true }
+        markdownRelPath: { type: string, nullable: true }
+        errorKind:
+          allOf:
+            - $ref: "#/components/schemas/ErrorKind"
+          nullable: true
+        reason: { type: string }
+    ManifestSummary:
+      type: object
+      required: [version, updatedAt, counts]
+      properties:
+        version: { type: integer }
+        updatedAt: { type: string }
+        counts:
+          type: object
+          properties:
+            completed: { type: integer }
+            error: { type: integer }
+            pendingUnknown: { type: integer }
+    EventPayload:
+      type: object
+      properties:
+        runId: { type: string }
+        taskId: { type: string }
+        type: { type: string }
+        phase:
+          type: string
+          enum: [download_start, download_end, validate, markdown, skip, retry, dlq]
+        attempt: { type: integer }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        durationMs: { type: integer }
+        result:
+          type: string
+          enum: [ok, error, skipped]
+        errorKind:
+          allOf:
+            - $ref: "#/components/schemas/ErrorKind"
+          nullable: true
+        reason: { type: string, nullable: true }
+paths:
+  /health:
+    get:
+      summary: Liveness
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+  /v1/auth/bridge:
+    get:
+      summary: Validate bridge token
+      security: [{ StripperToken: [] }]
+      responses:
+        "200":
+          description: Authorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthBridgeResponse" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthBridgeResponse" }
+  /v1/discovery/lessons:
+    post:
+      summary: Ingest lesson discovery (no download)
+      security: [{ StripperToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LessonDiscoveryRequest" }
+      responses:
+        "200":
+          description: Counts vs manifest
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryCounts" }
+        "400": { description: Invalid payload }
+        "401": { description: Unauthorized }
+  /v1/discovery/documents:
+    post:
+      summary: Ingest document discovery (no download)
+      security: [{ StripperToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentDiscoveryRequest" }
+      responses:
+        "200":
+          description: Counts vs manifest
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryCounts" }
+        "400": { description: Invalid payload }
+        "401": { description: Unauthorized }
+  /v1/jobs/start:
+    post:
+      summary: Start job / return queued pending tasks
+      security: [{ StripperToken: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JobStartRequest" }
+      responses:
+        "200":
+          description: Run created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobStartResponse" }
+        "401": { description: Unauthorized }
+  /v1/jobs/{runId}:
+    get:
+      summary: Job progress (+ nextTasks for extension pull)
+      security: [{ StripperToken: [] }]
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobStatusResponse" }
+        "404": { description: Unknown run }
+        "401": { description: Unauthorized }
+  /v1/jobs/{runId}/cancel:
+    post:
+      summary: Cancel run
+      security: [{ StripperToken: [] }]
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Cancelled
+        "404": { description: Unknown run }
+        "401": { description: Unauthorized }
+  /v1/tasks/{taskId}/artifact:
+    post:
+      summary: Ingest artifact from localPath (chrome.downloads)
+      security: [{ StripperToken: [] }]
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArtifactIngestRequest" }
+      responses:
+        "200":
+          description: Ingested or typed error without session pause
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactIngestResponse" }
+        "409":
+          description: session_expired — do not retry as network; pause auth
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactIngestResponse" }
+        "400": { description: Invalid payload }
+        "401": { description: Unauthorized }
+        "413": { description: Body too large }
+  /v1/manifest/summary:
+    get:
+      summary: Manifest counts for UI
+      security: [{ StripperToken: [] }]
+      responses:
+        "200":
+          description: Summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManifestSummary" }
+        "401": { description: Unauthorized }
+  /v1/events:
+    post:
+      summary: Observability events (no PII / cookies / tokens)
+      security: [{ StripperToken: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventPayload" }
+      responses:
+        "200":
+          description: Accepted
+        "401": { description: Unauthorized }

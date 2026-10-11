@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "StripperScrapper Adapter",
+  "version": "0.1.4",
+  "description": "Browser adapter MV3: auth Infnet, discovery e downloads sequenciais via bridge local.",
+  "permissions": ["tabs", "storage", "downloads", "scripting", "sidePanel"],
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "host_permissions": [
+    "https://infnet.online/*",
+    "https://*.infnet.online/*",
+    "https://drive.google.com/*",
+    "https://docs.google.com/*",
+    "https://accounts.google.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "StripperScrapper",
+    "default_popup": "popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://infnet.online/*", "https://*.infnet.online/*"],
+      "js": [
+        "content/debugLog.js",
+        "content/infnetAuth.js",
+        "content/lessonDiscovery.js",
+        "content/documentDiscovery.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://drive.google.com/*",
+        "https://docs.google.com/*"
+      ],
+      "js": ["content/debugLog.js", "content/driveDownload.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

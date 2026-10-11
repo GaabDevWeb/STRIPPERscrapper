@@ -1,0 +1,17 @@
+{
+  "planner_task_id": 14,
+  "feature": "browser-extension-migration",
+  "ran_at": "2026-08-09T20:40:00.000Z",
+  "command": "npm test",
+  "result": "pass",
+  "tests": 16,
+  "passed": 16,
+  "failed": 0,
+  "suites": [
+    "bridge HTTP integration",
+    "inbox artifact resolve (extension contract)",
+    "integrity / HTML session rejection",
+    "stableIds golden vectors"
+  ],
+  "notes": "Includes retry/DLQ attempt policy tests after PO corrigir"
+}

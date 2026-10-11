@@ -10,7 +10,9 @@
     "lessons": "node main.js --lessons",
     "docs": "node main.js --docs",
     "stripper": "node main.js --lessons",
-    "documents": "node main.js --docs"
+    "documents": "node main.js --docs",
+    "core": "node src/bridge/cli.mjs",
+    "test": "node --test test/**/*.test.mjs"
   },
   "dependencies": {
     "blessed": "^0.1.81",

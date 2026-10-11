@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="pt">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StripperScrapper</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>StripperScrapper</h1>
+      <p class="sub">Adapter MV3 · bridge local</p>
+      <button type="button" id="btnOpenLogs" class="primary">Abrir painel de logs</button>
+      <button type="button" id="btnOpenLogsTab" class="ghost">Logs em nova aba</button>
+      <p id="logsMsg" class="muted"></p>
+    </header>
+
+    <section class="card">
+      <div class="row between">
+        <strong>Auth</strong>
+        <button type="button" id="btnRefreshAuth" class="ghost">Refresh</button>
+      </div>
+      <p id="authStatus" class="status">—</p>
+      <p id="authDetail" class="muted"></p>
+      <p id="reauthHint" class="warn hidden">Sessão expirada — faça login manual no Infnet (CAPTCHA) e clique Verify auth.</p>
+      <button type="button" id="btnVerifyAuth">Verify auth</button>
+    </section>
+
+    <section class="card">
+      <strong>Bridge</strong>
+      <label>URL <input id="bridgeBaseUrl" type="url" placeholder="http://127.0.0.1:8787" /></label>
+      <label>Token <input id="bridgeToken" type="password" autocomplete="off" placeholder="X-Stripper-Token" /></label>
+      <div class="row">
+        <button type="button" id="btnSaveBridge">Save</button>
+        <button type="button" id="btnHealth" class="ghost">Health check</button>
+      </div>
+      <p id="bridgeMsg" class="muted"></p>
+    </section>
+
+    <section class="card">
+      <strong>URLs / opções</strong>
+      <label>CLASSES_URL <input id="classesUrl" type="url" placeholder="https://infnet.online/grupos/…/infnet-ci-zoom-mettings/" /></label>
+      <label>DOCUMENTS_URL <input id="documentsUrl" type="url" placeholder="https://infnet.online/grupos/…/documents/" /></label>
+      <label>Scope
+        <select id="scope">
+          <option value="lessons">lessons</option>
+          <option value="docs">docs</option>
+          <option value="all" selected>all</option>
+        </select>
+      </label>
+      <label>Mode
+        <select id="mode">
+          <option value="discover_only">Só descobrir (não baixa)</option>
+          <option value="discover_and_download" selected>Descobrir + baixar</option>
+        </select>
+      </label>
+      <p class="muted">O botão <strong>Start download</strong> força sempre “Descobrir + baixar”.</p>
+      <label class="check"><input type="checkbox" id="ignoreManifest" /> ignoreManifest</label>
+      <label class="check"><input type="checkbox" id="failFast" /> failFast</label>
+      <button type="button" id="btnSaveSettings" class="ghost">Save settings</button>
+    </section>
+
+    <section class="card actions">
+      <button type="button" id="btnDiscover">Discover</button>
+      <button type="button" id="btnStart">Start download</button>
+      <button type="button" id="btnCancel" class="danger">Cancel</button>
+      <p id="actionMsg" class="muted"></p>
+    </section>
+
+    <section class="card">
+      <strong>Progress</strong>
+      <ul class="progress" id="progressList">
+        <li>completed: <span data-k="completed">0</span></li>
+        <li>skipped: <span data-k="skipped">0</span></li>
+        <li>failed: <span data-k="failed">0</span></li>
+        <li>DLQ: <span data-k="dlq">0</span></li>
+        <li>pending: <span data-k="pending">0</span></li>
+      </ul>
+      <p id="runMeta" class="muted"></p>
+    </section>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

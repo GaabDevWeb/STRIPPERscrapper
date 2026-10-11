@@ -2,5 +2,7 @@ node_modules/
 
 .env
 session.json
+.bridge-token
 
 temp_downloads/
+downloads/

@@ -1,0 +1,380 @@
+apiVersion: capability-orchestrator.io/v2
+kind: CapabilityGraph
+metadata:
+  id: browser-extension-migration
+  feature: "Browser Extension migration (adapter + core bridge)"
+  created_at: "2026-08-09T20:23:00Z"
+  planner_version: "1.0.0"
+  ir_version: "2.0.0"
+  policy_ref: high-reliability
+
+spec:
+  global_inputs:
+    - id: prd
+      source: docs/prd/2026-08-09-browser-extension-migration.md
+    - id: architecture
+      source: docs/ARCHITECTURE.md
+    - id: api-spec
+      source: docs/API_SPEC.md
+    - id: data-model
+      source: docs/DATA-MODEL.md
+    - id: adr-0001
+      source: docs/adr/0001-extension-local-http-bridge.md
+    - id: adr-0002
+      source: docs/adr/0002-session-json-deprecation-extension-path.md
+    - id: adr-0003
+      source: docs/adr/0003-no-cluster-in-extension.md
+    - id: legacy-ssot
+      source: ARQUITETURA_E_FLUXOS.md
+
+  global_outputs:
+    - id: extension-adapter
+      path: extension/
+    - id: core-bridge
+      path: src/bridge/
+    - id: bridge-contract
+      path: docs/contracts/bridge-v1.yaml
+    - id: downloads-compatible
+      path: downloads/
+    - id: test-suite
+      path: package.json
+
+  assumptions:
+    - id: S1
+      text: "Chrome MV3 only in v1"
+    - id: S2
+      text: "Bridge token configured manually in extension UI for v1"
+    - id: S3
+      text: "Prefer localPath artifact handoff over multipart"
+    - id: S4
+      text: "Stable ID pure functions extractable without changing existing IDs"
+    - id: S5
+      text: "Drive download via chrome.downloads is feasible; else replan"
+
+  out_of_scope:
+    - "CAPTCHA bypass or automated anti-bot defeat"
+    - "Multi-browser Puppeteer cluster inside extension"
+    - "Remote/cloud bridge"
+    - "Manifest schema / markdown front-matter breaking changes without ADR"
+    - "Full removal of legacy Puppeteer CLI in this feature"
+    - "Native Messaging as v1 transport"
+
+  nodes:
+    - id: research-1
+      capability: research
+      type: worker
+      metadata:
+        planner_task_id: 1
+        priority: 100
+        estimated_effort: S
+      inputs:
+        - ref: global_inputs.legacy-ssot
+      outputs:
+        - id: mapping-note
+          path: memory/browser-extension-migration/mapping.md
+      dependencies: []
+      definition_of_done:
+        - id: dod-1
+          check: "Puppeteer→extension/core mapping table complete"
+          verification: evidence
+
+    - id: contract-2
+      capability: api-contract
+      type: worker
+      metadata:
+        planner_task_id: 2
+        priority: 95
+        estimated_effort: M
+      inputs:
+        - ref: global_inputs.api-spec
+      outputs:
+        - id: bridge-v1
+          path: docs/contracts/bridge-v1.yaml
+      dependencies: [research-1]
+      definition_of_done:
+        - id: dod-2
+          check: "Machine-readable bridge v1 covers API_SPEC"
+          verification: evidence
+
+    - id: infra-3
+      capability: backend-implementation
+      type: worker
+      metadata:
+        planner_task_id: 3
+        priority: 90
+        estimated_effort: M
+      inputs:
+        - ref: contract-2.outputs.bridge-v1
+      outputs:
+        - id: extension-skeleton
+          path: extension/
+        - id: bridge-skeleton
+          path: src/bridge/
+      dependencies: [contract-2]
+      definition_of_done:
+        - id: dod-3a
+          check: "npm run core binds 127.0.0.1"
+          verification: automated
+        - id: dod-3b
+          check: "GET /health returns 200"
+          verification: automated
+
+    - id: fe-auth-4
+      capability: frontend-ui
+      type: worker
+      metadata:
+        planner_task_id: 4
+        priority: 85
+        estimated_effort: M
+      inputs:
+        - ref: infra-3.outputs.extension-skeleton
+      outputs:
+        - id: auth-state-module
+          path: extension/
+      dependencies: [infra-3]
+      definition_of_done:
+        - id: dod-4a
+          check: "Auth state machine implemented"
+          verification: evidence
+
+    - id: contract-ids-5
+      capability: api-contract
+      type: worker
+      metadata:
+        planner_task_id: 5
+        priority: 84
+        estimated_effort: M
+      inputs:
+        - ref: research-1.outputs.mapping-note
+      outputs:
+        - id: stable-id-fixtures
+          path: memory/browser-extension-migration/stable-id-fixtures.json
+      dependencies: [research-1]
+      definition_of_done:
+        - id: dod-5
+          check: "Golden vectors match core IDs 100%"
+          verification: automated
+
+    - id: fe-discover-lessons-6
+      capability: frontend-ui
+      type: worker
+      metadata:
+        planner_task_id: 6
+        priority: 80
+        estimated_effort: M
+      inputs:
+        - ref: contract-2.outputs.bridge-v1
+      outputs:
+        - id: lesson-discovery
+          path: extension/
+      dependencies: [contract-2, fe-auth-4, contract-ids-5]
+      definition_of_done:
+        - id: dod-6
+          check: "Lesson discovery with stable transcript IDs"
+          verification: evidence
+
+    - id: fe-discover-docs-7
+      capability: frontend-ui
+      type: worker
+      metadata:
+        planner_task_id: 7
+        priority: 78
+        estimated_effort: M
+      inputs:
+        - ref: contract-2.outputs.bridge-v1
+      outputs:
+        - id: document-discovery
+          path: extension/
+      dependencies: [contract-2, fe-auth-4, contract-ids-5]
+      definition_of_done:
+        - id: dod-7
+          check: "Document BFS discovery with stable document IDs"
+          verification: evidence
+
+    - id: be-bridge-8
+      capability: backend-implementation
+      type: worker
+      metadata:
+        planner_task_id: 8
+        priority: 82
+        estimated_effort: L
+      inputs:
+        - ref: contract-2.outputs.bridge-v1
+      outputs:
+        - id: bridge-server
+          path: src/bridge/
+      dependencies: [contract-2, infra-3]
+      definition_of_done:
+        - id: dod-8a
+          check: "All bridge v1 endpoints implemented"
+          verification: automated
+
+    - id: spike-downloads-9
+      capability: research
+      type: worker
+      metadata:
+        planner_task_id: 9
+        priority: 81
+        estimated_effort: L
+      inputs:
+        - ref: fe-auth-4.outputs.auth-state-module
+      outputs:
+        - id: spike-decision
+          path: memory/browser-extension-migration/spike-drive-downloads.md
+      dependencies: [fe-auth-4]
+      definition_of_done:
+        - id: dod-9
+          check: "Go/no-go for chrome.downloads recorded"
+          verification: evidence
+
+    - id: fe-dl-lessons-10
+      capability: frontend-ui
+      type: worker
+      metadata:
+        planner_task_id: 10
+        priority: 70
+        estimated_effort: M
+      inputs:
+        - ref: fe-discover-lessons-6.outputs.lesson-discovery
+      outputs:
+        - id: lesson-download-adapter
+          path: extension/
+      dependencies: [fe-discover-lessons-6, be-bridge-8, spike-downloads-9]
+      definition_of_done:
+        - id: dod-10
+          check: "Lesson artifact notified to core"
+          verification: evidence
+
+    - id: fe-dl-docs-11
+      capability: frontend-ui
+      type: worker
+      metadata:
+        planner_task_id: 11
+        priority: 68
+        estimated_effort: M
+      inputs:
+        - ref: fe-discover-docs-7.outputs.document-discovery
+      outputs:
+        - id: document-download-adapter
+          path: extension/
+      dependencies: [fe-discover-docs-7, be-bridge-8]
+      definition_of_done:
+        - id: dod-11
+          check: "Document binary ingested; HTML => session_expired"
+          verification: evidence
+
+    - id: be-process-12
+      capability: backend-implementation
+      type: worker
+      metadata:
+        planner_task_id: 12
+        priority: 72
+        estimated_effort: M
+      inputs:
+        - ref: be-bridge-8.outputs.bridge-server
+      outputs:
+        - id: ingest-pipeline
+          path: src/bridge/
+      dependencies: [be-bridge-8]
+      definition_of_done:
+        - id: dod-12
+          check: "validateBinaryFile + toMarkdown reused"
+          verification: automated
+
+    - id: be-manifest-13
+      capability: backend-implementation
+      type: worker
+      metadata:
+        planner_task_id: 13
+        priority: 65
+        estimated_effort: M
+      inputs:
+        - ref: be-process-12.outputs.ingest-pipeline
+      outputs:
+        - id: manifest-wiring
+          path: src/
+      dependencies: [be-process-12, fe-dl-lessons-10]
+      definition_of_done:
+        - id: dod-13
+          check: "SKIP/pending/retry/DLQ + paused_auth"
+          verification: automated
+
+    - id: test-14
+      capability: testing
+      type: gate
+      metadata:
+        planner_task_id: 14
+        priority: 60
+        estimated_effort: M
+      inputs:
+        - ref: be-manifest-13.outputs.manifest-wiring
+      outputs:
+        - id: test-report
+          path: telemetry/evidence/test-report.json
+      dependencies: [contract-ids-5, be-bridge-8, be-process-12, be-manifest-13]
+      definition_of_done:
+        - id: dod-14
+          check: "npm test green"
+          verification: automated
+      gate:
+        on_reject: invalidate_downstream
+        verdict_required: true
+
+    - id: fe-ui-15
+      capability: frontend-ui
+      type: worker
+      metadata:
+        planner_task_id: 15
+        priority: 50
+        estimated_effort: M
+      inputs:
+        - ref: be-bridge-8.outputs.bridge-server
+      outputs:
+        - id: extension-popup-ui
+          path: extension/
+      dependencies: [be-bridge-8, fe-dl-lessons-10, be-manifest-13]
+      definition_of_done:
+        - id: dod-15
+          check: "Minimal operational UI complete"
+          verification: evidence
+
+    - id: sec-16
+      capability: security-review
+      type: gate
+      metadata:
+        planner_task_id: 16
+        priority: 40
+        estimated_effort: M
+      inputs:
+        - ref: fe-ui-15.outputs.extension-popup-ui
+      outputs:
+        - id: security-report
+          path: telemetry/evidence/security-review.json
+      dependencies: [be-bridge-8, fe-dl-lessons-10, fe-dl-docs-11, fe-ui-15, test-14]
+      definition_of_done:
+        - id: dod-16
+          check: "No critical security findings"
+          verification: evidence
+      gate:
+        on_reject: invalidate_downstream
+        verdict_required: true
+
+    - id: docs-17
+      capability: documentation
+      type: gate
+      metadata:
+        planner_task_id: 17
+        priority: 30
+        estimated_effort: S
+      inputs:
+        - ref: sec-16.outputs.security-report
+      outputs:
+        - id: operator-docs
+          path: README.md
+      dependencies: [fe-ui-15, sec-16]
+      definition_of_done:
+        - id: dod-17
+          check: "README + E2E checklist published"
+          verification: evidence
+      gate:
+        verdict_required: true

@@ -38,3 +38,13 @@ Fluxo **login → redirect_to → aulas** está coerente. Implementação usa se
 ## Instalação (npm)
 
 - Se o disco estiver sem espaço para o Chromium embutido: `PUPPETEER_SKIP_DOWNLOAD=true npm install` e defina `PUPPETEER_EXECUTABLE_PATH` apontando para o Chrome instalado (ver `.env.example`).
+
+## Update 2026-08-09 — HTML multi-disciplina (Java / C# / Projeto Bloco)
+
+Seletores **mantêm-se** (`.infnetci-recording-item`, `a.transcription-link`, `button.infnetci-accordion-button`).
+
+Mudanças de comportamento:
+
+1. Expandir `.infnetci-card` com `display:none` antes do extract.
+2. Disciplina = accordion da `section.infnetci-accordion` pai (`closest`), não só ordem no DOM.
+3. Download de transcrição: primário `uc?export=download&id=<fileId>`; UI Drive só como fallback.

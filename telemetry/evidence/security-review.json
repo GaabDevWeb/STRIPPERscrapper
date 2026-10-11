@@ -1,0 +1,27 @@
+{
+  "planner_task_id": 16,
+  "feature": "browser-extension-migration",
+  "reviewed_at": "2026-08-09T20:35:00.000Z",
+  "verdict": "PASS",
+  "critical_count": 0,
+  "high_count": 0,
+  "medium_count": 0,
+  "checklist": {
+    "http_bind_127_0_0_1_only": { "status": "pass" },
+    "bridge_token_not_infnet_credentials": { "status": "pass" },
+    "token_not_logged": { "status": "pass" },
+    "no_secrets_in_bridge_logs_payloads": { "status": "pass" },
+    "session_json_not_required_extension_path": { "status": "pass" },
+    "no_captcha_bypass": { "status": "pass" },
+    "extension_permissions_downloads": { "status": "pass_with_notes" },
+    "bridge_token_gitignored": { "status": "pass" }
+  },
+  "findings": [],
+  "hardening_optional": [
+    "Validate bridgeBaseUrl is loopback in extension saveBridgeConfig",
+    "Contain inbox-relative paths in resolveArtifactSourcePath",
+    "Narrow host_permissions from *.google.com to drive/docs hosts",
+    "Strip localStorage key in /v1/events handler"
+  ],
+  "tests_reference": "telemetry/evidence/test-report.json"
+}

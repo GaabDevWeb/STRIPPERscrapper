@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="pt">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StripperScrapper — Logs</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Logs da extensão</h1>
+      <p class="sub">Tudo o que a extensão faz (sem tokens/cookies)</p>
+    </header>
+
+    <div class="toolbar">
+      <label class="chk">
+        <input type="checkbox" id="autoScroll" checked />
+        Auto-scroll
+      </label>
+      <select id="levelFilter" title="Filtro de nível">
+        <option value="all">Todos os níveis</option>
+        <option value="debug">+ debug</option>
+        <option value="info">info+</option>
+        <option value="warn">warn+</option>
+        <option value="error">só error</option>
+      </select>
+      <input type="search" id="textFilter" placeholder="Filtrar texto…" />
+      <button type="button" id="btnCopy" class="primary">Copiar tudo</button>
+      <button type="button" id="btnRefresh">Atualizar</button>
+      <button type="button" id="btnClear" class="danger">Limpar</button>
+    </div>
+
+    <div id="statusBar">0 entradas</div>
+    <pre id="logView" aria-live="polite"></pre>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

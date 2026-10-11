@@ -20,6 +20,9 @@ import { launchBrowser } from '../utils/browser.mjs';
 import { makeTaggedLoggers } from '../utils/workerLog.mjs';
 import { withRetries } from '../utils/retry.mjs';
 import { validateBinaryFile, safeUnlink } from '../utils/integrity.mjs';
+import { toMarkdown } from '../utils/lessonMarkdown.mjs';
+
+export { toMarkdown };
 
 const DEFAULT_CLASSES_URL =
   'https://infnet.online/grupos/fundamentos-do-processamento-de-dados-26e1-26e2-93422564/infnet-ci-zoom-mettings/';
@@ -155,24 +158,46 @@ function gotoClasses(page, classesUrl) {
  * @param {import('puppeteer').Page} page
  */
 async function extractLessonItemsFromPage(page) {
+  // Expandir accordions (cards com display:none) antes de ler — páginas multi-disciplina.
+  await page.evaluate(() => {
+    for (const card of document.querySelectorAll('.infnetci-card')) {
+      try {
+        card.style.display = '';
+        card.style.visibility = 'visible';
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const btn of document.querySelectorAll('button.infnetci-accordion-button')) {
+      try {
+        const section = btn.closest('section.infnetci-accordion');
+        const card = section?.querySelector('.infnetci-card');
+        if (card && (card.style.display === 'none' || card.hidden)) {
+          btn.click();
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+  await new Promise((r) => setTimeout(r, 400));
+
   return page.evaluate(() => {
-    const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
-    const accButtons = [
-      ...document.querySelectorAll('button.infnetci-accordion-button'),
-    ];
     const items = [...document.querySelectorAll('.infnetci-recording-item')];
 
     return items
       .map((el) => {
         const h3 = el.querySelector('h3');
-        const a = el.querySelector('.transcription-link');
-        let accordionTitle = '';
-        for (const btn of accButtons) {
-          const pos = btn.compareDocumentPosition(el);
-          if (pos & FOLLOWING) {
-            accordionTitle = btn.textContent.trim();
-          }
-        }
+        const a =
+          el.querySelector('a.transcription-link') ||
+          el.querySelector('a.recording-link.transcription-link') ||
+          [...el.querySelectorAll('a.recording-link')].find((link) =>
+            /transcri/i.test(link.textContent || '')
+          );
+        const section = el.closest('section.infnetci-accordion');
+        const accordionTitle =
+          section?.querySelector('button.infnetci-accordion-button')?.textContent?.trim() ||
+          '';
         return {
           title: h3 ? h3.textContent.trim() : '',
           href: a ? a.href : '',
@@ -363,33 +388,6 @@ function classifyLessonError(err) {
 function isRetryableLessonError(err) {
   const kind = classifyLessonError(err);
   return kind === 'integrity' || kind === 'timeout' || kind === 'network';
-}
-
-function yamlScalar(value) {
-  if (value == null) return '""';
-  return JSON.stringify(String(value));
-}
-
-export async function toMarkdown(filePath, metadata) {
-  const dir = path.dirname(filePath);
-  const ext = path.extname(filePath);
-  const base = path.basename(filePath, ext);
-  const mdPath = path.join(dir, `${base}.md`);
-  const downloadedAt =
-    metadata.downloaded_at || new Date().toISOString();
-  const content = [
-    '---',
-    `title: ${yamlScalar(metadata.title)}`,
-    `source_url: ${yamlScalar(metadata.source_url)}`,
-    `course: ${yamlScalar(metadata.course ?? '')}`,
-    `transcript_file: ${yamlScalar(path.basename(filePath))}`,
-    `downloaded_at: ${yamlScalar(downloadedAt)}`,
-    '---',
-    '',
-    '',
-  ].join('\n');
-  await fs.writeFile(mdPath, content, 'utf8');
-  return mdPath;
 }
 
 /**
